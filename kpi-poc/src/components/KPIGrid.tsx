@@ -38,10 +38,12 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
     return map;
   }, [configs]);
 
-  // Get all KPIs that would be affected if we edit the hovered KPI
-  const getAffectedKPIs = (kpi: KPIName): Set<KPIName> => {
+  // Memoize affected KPIs for the currently hovered cell
+  const affectedKPIs = useMemo(() => {
+    if (!hoveredCell) return new Set<KPIName>();
+
     const affected = new Set<KPIName>();
-    const queue: KPIName[] = [kpi];
+    const queue: KPIName[] = [hoveredCell.kpi];
     const visited = new Set<KPIName>();
 
     while (queue.length > 0) {
@@ -59,7 +61,7 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
     }
 
     return affected;
-  };
+  }, [hoveredCell, dependencyMap]);
 
   const weeks = Array.from(productData.weeks.keys()).sort((a, b) => a - b);
 
@@ -99,8 +101,7 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
 
     // Check if this cell is affected by the hovered cell
     const isHoveredCell = hoveredCell?.week === week && hoveredCell?.kpi === kpi;
-    const isAffectedByHover = hoveredCell && hoveredCell.week === week &&
-                              getAffectedKPIs(hoveredCell.kpi).has(kpi);
+    const isAffectedByHover = hoveredCell && hoveredCell.week === week && affectedKPIs.has(kpi);
 
     let classes = 'px-3 py-2 text-right font-mono text-sm border-r border-gray-200 transition-colors ';
 

@@ -273,7 +273,7 @@ function App() {
             )}
 
             {activeTab === 'logs' && (
-              <div>
+              <div className="flex flex-col h-full">
                 <div className="mb-4">
                   <h3 className="text-sm font-semibold text-gray-700 mb-2">
                     Edit History & Logs:
@@ -285,7 +285,7 @@ function App() {
                     <li>• Calculation levels show dependency order</li>
                   </ul>
                 </div>
-                <div className="bg-white border border-gray-200 rounded-lg" style={{ height: '600px' }}>
+                <div className="bg-white border border-gray-200 rounded-lg overflow-hidden" style={{ height: '500px' }}>
                   <LogsPanel logs={logs} />
                 </div>
               </div>
@@ -293,8 +293,8 @@ function App() {
           </div>
         </div>
 
-        {/* Change Log */}
-        {changeLog.length > 0 && (
+        {/* Change Log - Only show on grid/dag/config tabs */}
+        {activeTab !== 'logs' && changeLog.length > 0 && (
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
             <h3 className="text-sm font-semibold text-gray-700 mb-3">Recent Changes</h3>
             <div className="space-y-1 max-h-40 overflow-y-auto">

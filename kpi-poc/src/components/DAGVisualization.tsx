@@ -146,7 +146,7 @@ export const DAGVisualization: React.FC<DAGVisualizationProps> = ({
       parentMap,
       childMap
     );
-  }, [configs, highlightedKPIs, lockedKPIs, onNodeClick, handleNodeMouseEnter, handleNodeMouseLeave, hoveredNode, parentMap, childMap]);
+  }, [configs, highlightedKPIs, lockedKPIs, onNodeClick, hoveredNode, parentMap, childMap]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
@@ -155,7 +155,7 @@ export const DAGVisualization: React.FC<DAGVisualizationProps> = ({
   useEffect(() => {
     setNodes(initialNodes);
     setEdges(initialEdges);
-  }, [initialNodes, initialEdges, setNodes, setEdges]);
+  }, [initialNodes, initialEdges]);
 
   return (
     <div className="w-full h-[700px] border border-gray-300 rounded-lg shadow-sm bg-gray-50">
