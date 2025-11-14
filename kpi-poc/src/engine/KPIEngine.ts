@@ -1,5 +1,5 @@
-import { KPIConfig, KPIName, WeekData, RebalancingResult, ProductData } from '../types';
-import { topologicalSort, getDependentKPIs } from './topologicalSort';
+import type { KPIConfig, KPIName, WeekData, RebalancingResult, ProductData } from '../types';
+import { topologicalSort } from './topologicalSort';
 import { evaluateFormula } from './formulas';
 
 export class KPIRebalancingEngine {

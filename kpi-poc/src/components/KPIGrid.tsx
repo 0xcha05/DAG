@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ProductData, KPIName, KPIConfig } from '../types';
+import type { ProductData, KPIName, KPIConfig } from '../types';
 import { formatKPIValue, parseKPIValue } from '../engine/formulas';
 import { Edit2, Lock, Calculator } from 'lucide-react';
 
@@ -72,7 +72,7 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
     return classes;
   };
 
-  const renderCellIcon = (config: KPIConfig, kpi: KPIName): JSX.Element | null => {
+  const renderCellIcon = (config: KPIConfig, kpi: KPIName): React.JSX.Element | null => {
     if (lockedKPIs.has(kpi)) {
       return <Lock className="w-3 h-3 text-gray-400" />;
     }

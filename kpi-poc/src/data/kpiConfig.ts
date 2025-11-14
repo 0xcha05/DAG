@@ -1,4 +1,4 @@
-import { KPIConfig, KPIName } from '../types';
+import type { KPIConfig, KPIName } from '../types';
 
 /**
  * KPI Configuration based on Sls U (Sales Units) editing scenario

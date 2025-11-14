@@ -1,8 +1,6 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import {
   ReactFlow,
-  Node,
-  Edge,
   Background,
   Controls,
   MiniMap,
@@ -10,8 +8,9 @@ import {
   useEdgesState,
   MarkerType,
 } from '@xyflow/react';
+import type { Node, Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { KPIConfig, KPIName } from '../types';
+import type { KPIConfig, KPIName } from '../types';
 import { Edit2, Calculator, Lock } from 'lucide-react';
 
 interface DAGVisualizationProps {
@@ -71,8 +70,8 @@ export const DAGVisualization: React.FC<DAGVisualizationProps> = ({
     return buildDAGLayout(configs, highlightedKPIs, lockedKPIs, onNodeClick);
   }, [configs, highlightedKPIs, lockedKPIs, onNodeClick]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [nodes, , onNodesChange] = useNodesState(initialNodes);
+  const [edges, , onEdgesChange] = useEdgesState(initialEdges);
 
   return (
     <div className="w-full h-[600px] border border-gray-300 rounded-lg shadow-sm bg-gray-50">
@@ -115,16 +114,8 @@ function buildDAGLayout(
 
   // Group KPIs by category
   const editableKPIs = configs.filter(c => c.isEditable);
-  const calculatedKPIs = configs.filter(c => !c.isEditable && c.formula);
-  const inventoryKPIs = configs.filter(c =>
-    ['BOP U', 'BOP $', 'EOP U', 'EOP $', 'Return Inv', 'Total Rcpt U', 'Total Rcpt $'].includes(
-      c.name
-    )
-  );
 
   // Layout parameters
-  const nodeWidth = 180;
-  const nodeHeight = 100;
   const horizontalSpacing = 250;
   const verticalSpacing = 150;
 
@@ -200,7 +191,6 @@ function buildDAGLayout(
  */
 function groupByDependencyLevel(configs: KPIConfig[]): KPIConfig[][] {
   const levels: KPIConfig[][] = [];
-  const processed = new Set<KPIName>();
   const configMap = new Map(configs.map(c => [c.name, c]));
 
   const getLevel = (config: KPIConfig): number => {

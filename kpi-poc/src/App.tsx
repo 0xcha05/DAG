@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { KPIRebalancingEngine } from './engine/KPIEngine';
 import { KPIGrid } from './components/KPIGrid';
 import { DAGVisualization } from './components/DAGVisualization';
 import { ConfigEditor } from './components/ConfigEditor';
 import { kpiConfigs } from './data/kpiConfig';
 import { generateInitialData, cloneProductData } from './data/initialData';
-import { ProductData, KPIName, KPIConfig } from './types';
+import type { ProductData, KPIName, KPIConfig } from './types';
 import { TrendingUp, Network, Settings, RefreshCw, AlertCircle } from 'lucide-react';
 
 type TabType = 'grid' | 'dag' | 'config';

@@ -1,4 +1,4 @@
-import { ProductData, WeekData, KPIName } from '../types';
+import type { ProductData, WeekData, KPIName } from '../types';
 
 /**
  * Generates initial sample data for products across multiple weeks

@@ -1,5 +1,5 @@
 import { evaluate } from 'mathjs';
-import { KPIName, KPIValue } from '../types';
+import type { KPIName, KPIValue } from '../types';
 
 /**
  * Safely evaluates a formula string with given KPI values.

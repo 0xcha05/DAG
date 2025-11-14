@@ -1,4 +1,4 @@
-import { KPIConfig, KPIName } from '../types';
+import type { KPIConfig, KPIName } from '../types';
 
 /**
  * Performs topological sort on KPI dependencies using Kahn's algorithm.

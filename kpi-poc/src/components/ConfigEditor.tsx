@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { KPIConfig, KPIName } from '../types';
-import { Settings, Save, X, Edit, Check } from 'lucide-react';
+import type { KPIConfig, KPIName } from '../types';
+import { Settings, X, Edit, Check } from 'lucide-react';
 
 interface ConfigEditorProps {
   configs: KPIConfig[];
