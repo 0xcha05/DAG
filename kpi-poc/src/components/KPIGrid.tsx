@@ -103,14 +103,14 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
     const isHoveredCell = hoveredCell?.week === week && hoveredCell?.kpi === kpi;
     const isAffectedByHover = hoveredCell && hoveredCell.week === week && affectedKPIs.has(kpi);
 
-    let classes = 'px-3 py-2 text-right font-mono text-sm border-r border-gray-200 transition-colors ';
+    let classes = 'px-3 py-2 text-right font-mono text-sm border-r border-gray-200 transition-all duration-150 ';
 
     if (isHighlighted) {
       classes += 'bg-yellow-100 animate-pulse ';
     } else if (isHoveredCell && isEditable) {
-      classes += 'bg-blue-200 ring-2 ring-blue-400 cursor-pointer ';
+      classes += '!bg-blue-200 ring-2 ring-blue-400 cursor-pointer ';
     } else if (isAffectedByHover) {
-      classes += 'bg-orange-100 ring-1 ring-orange-300 ';
+      classes += '!bg-orange-100 ring-1 ring-orange-300 ';
     } else if (isLocked) {
       classes += 'bg-gray-100 text-gray-500 ';
     } else if (isEditable) {

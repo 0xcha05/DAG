@@ -67,18 +67,19 @@ const CustomNode = ({ data }: any) => {
       />
 
       <div
-        className={`px-4 py-3 rounded-lg border-2 ${borderColor} ${bgColor} ${opacity} shadow-md min-w-[160px] cursor-pointer hover:shadow-lg transition-all duration-200`}
+        className={`px-4 py-3 rounded-lg border-2 ${borderColor} ${bgColor} ${opacity} shadow-md min-w-[160px] hover:shadow-lg transition-all duration-200`}
         onMouseEnter={() => data.onMouseEnter?.(data.kpi)}
         onMouseLeave={() => data.onMouseLeave?.()}
         onClick={() => data.onClick?.(data.kpi)}
+        style={{ cursor: 'default' }}
       >
-        <div className="flex items-center gap-2 mb-1">
+        <div className="flex items-center gap-2 mb-1 pointer-events-none">
           <Icon className="w-4 h-4" />
           <span className="font-semibold text-sm">{data.label}</span>
         </div>
-        <div className="text-xs text-gray-600">{data.kpi}</div>
+        <div className="text-xs text-gray-600 pointer-events-none">{data.kpi}</div>
         {data.formula && (
-          <div className="text-xs text-gray-500 mt-1 font-mono bg-white px-2 py-1 rounded">
+          <div className="text-xs text-gray-500 mt-1 font-mono bg-white px-2 py-1 rounded pointer-events-none">
             {data.formula}
           </div>
         )}
