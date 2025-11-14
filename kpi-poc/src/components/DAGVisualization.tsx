@@ -67,11 +67,8 @@ const CustomNode = ({ data }: any) => {
       />
 
       <div
-        className={`px-4 py-3 rounded-lg border-2 ${borderColor} ${bgColor} ${opacity} shadow-md min-w-[160px] hover:shadow-lg transition-all duration-200`}
-        onMouseEnter={() => data.onMouseEnter?.(data.kpi)}
-        onMouseLeave={() => data.onMouseLeave?.()}
+        className={`px-4 py-3 rounded-lg border-2 ${borderColor} ${bgColor} ${opacity} shadow-md min-w-[160px] hover:shadow-lg transition-all duration-200 cursor-pointer`}
         onClick={() => data.onClick?.(data.kpi)}
-        style={{ cursor: 'default' }}
       >
         <div className="flex items-center gap-2 mb-1 pointer-events-none">
           <Icon className="w-4 h-4" />
@@ -105,7 +102,7 @@ export const DAGVisualization: React.FC<DAGVisualizationProps> = ({
   lockedKPIs = new Set(),
   onNodeClick,
 }) => {
-  const [hoveredNode, setHoveredNode] = useState<KPIName | null>(null);
+  const [selectedNode, setSelectedNode] = useState<KPIName | null>(null);
 
   // Build dependency maps
   const { parentMap, childMap } = useMemo(() => {
@@ -127,27 +124,24 @@ export const DAGVisualization: React.FC<DAGVisualizationProps> = ({
     return { parentMap: parents, childMap: children };
   }, [configs]);
 
-  const handleNodeMouseEnter = useCallback((kpi: KPIName) => {
-    setHoveredNode(kpi);
-  }, []);
-
-  const handleNodeMouseLeave = useCallback(() => {
-    setHoveredNode(null);
-  }, []);
+  const handleNodeClick = useCallback((kpi: KPIName) => {
+    // Toggle selection - if already selected, deselect
+    setSelectedNode(prev => prev === kpi ? null : kpi);
+    // Call the original onNodeClick if provided
+    onNodeClick?.(kpi);
+  }, [onNodeClick]);
 
   const { nodes: initialNodes, edges: initialEdges } = useMemo(() => {
     return buildDAGLayout(
       configs,
       highlightedKPIs,
       lockedKPIs,
-      onNodeClick,
-      handleNodeMouseEnter,
-      handleNodeMouseLeave,
-      hoveredNode,
+      handleNodeClick,
+      selectedNode,
       parentMap,
       childMap
     );
-  }, [configs, highlightedKPIs, lockedKPIs, onNodeClick, hoveredNode, parentMap, childMap]);
+  }, [configs, highlightedKPIs, lockedKPIs, handleNodeClick, selectedNode, parentMap, childMap]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
@@ -216,22 +210,20 @@ function buildDAGLayout(
   configs: KPIConfig[],
   highlightedKPIs: Set<KPIName>,
   lockedKPIs: Set<KPIName>,
-  onNodeClick: ((kpi: KPIName) => void) | undefined,
-  onNodeMouseEnter: (kpi: KPIName) => void,
-  onNodeMouseLeave: () => void,
-  hoveredNode: KPIName | null,
+  onNodeClick: (kpi: KPIName) => void,
+  selectedNode: KPIName | null,
   parentMap: Map<KPIName, Set<KPIName>>,
   childMap: Map<KPIName, Set<KPIName>>
 ): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
-  // Calculate hover states for all nodes
-  const getHoverState = (kpi: KPIName): 'self' | 'parent' | 'child' | 'dimmed' | null => {
-    if (!hoveredNode) return null;
-    if (kpi === hoveredNode) return 'self';
-    if (parentMap.get(hoveredNode)?.has(kpi)) return 'parent';
-    if (childMap.get(hoveredNode)?.has(kpi)) return 'child';
+  // Calculate selection states for all nodes
+  const getSelectionState = (kpi: KPIName): 'self' | 'parent' | 'child' | 'dimmed' | null => {
+    if (!selectedNode) return null;
+    if (kpi === selectedNode) return 'self';
+    if (parentMap.get(selectedNode)?.has(kpi)) return 'parent';
+    if (childMap.get(selectedNode)?.has(kpi)) return 'child';
     return 'dimmed';
   };
 
@@ -256,10 +248,8 @@ function buildDAGLayout(
         isEditable: true,
         isLocked: lockedKPIs.has(config.name),
         isHighlighted: highlightedKPIs.has(config.name),
-        hoverState: getHoverState(config.name),
+        hoverState: getSelectionState(config.name),
         onClick: onNodeClick,
-        onMouseEnter: onNodeMouseEnter,
-        onMouseLeave: onNodeMouseLeave,
       },
     });
   });
@@ -295,10 +285,8 @@ function buildDAGLayout(
           isEditable: false,
           isLocked: lockedKPIs.has(config.name),
           isHighlighted: highlightedKPIs.has(config.name),
-          hoverState: getHoverState(config.name),
+          hoverState: getSelectionState(config.name),
           onClick: onNodeClick,
-          onMouseEnter: onNodeMouseEnter,
-          onMouseLeave: onNodeMouseLeave,
         },
       });
     });
@@ -309,26 +297,26 @@ function buildDAGLayout(
     config.dependsOn.forEach(dependency => {
       const isHighlighted = highlightedKPIs.has(config.name) || highlightedKPIs.has(dependency);
 
-      // Check if edge should be highlighted due to hover
-      let isHoverHighlighted = false;
-      let hoverColor = '#9ca3af';
-      if (hoveredNode) {
-        // Highlight edges FROM the hovered node to its children
-        if (dependency === hoveredNode && childMap.get(hoveredNode)?.has(config.name)) {
-          isHoverHighlighted = true;
-          hoverColor = '#fb923c'; // Orange for outgoing (to children)
+      // Check if edge should be highlighted due to selection
+      let isSelectionHighlighted = false;
+      let selectionColor = '#9ca3af';
+      if (selectedNode) {
+        // Highlight edges FROM the selected node to its children
+        if (dependency === selectedNode && childMap.get(selectedNode)?.has(config.name)) {
+          isSelectionHighlighted = true;
+          selectionColor = '#fb923c'; // Orange for outgoing (to children)
         }
-        // Highlight edges TO the hovered node from its parents
-        else if (config.name === hoveredNode && parentMap.get(hoveredNode)?.has(dependency)) {
-          isHoverHighlighted = true;
-          hoverColor = '#60a5fa'; // Blue for incoming (from parents)
+        // Highlight edges TO the selected node from its parents
+        else if (config.name === selectedNode && parentMap.get(selectedNode)?.has(dependency)) {
+          isSelectionHighlighted = true;
+          selectionColor = '#60a5fa'; // Blue for incoming (from parents)
         }
       }
 
-      const finalHighlight = isHighlighted || isHoverHighlighted;
-      const strokeColor = isHoverHighlighted ? hoverColor : isHighlighted ? '#fbbf24' : '#9ca3af';
+      const finalHighlight = isHighlighted || isSelectionHighlighted;
+      const strokeColor = isSelectionHighlighted ? selectionColor : isHighlighted ? '#fbbf24' : '#9ca3af';
       const strokeWidth = finalHighlight ? 3 : 2;
-      const opacity = hoveredNode && !isHoverHighlighted ? 0.2 : 1;
+      const opacity = selectedNode && !isSelectionHighlighted ? 0.2 : 1;
 
       edges.push({
         id: `${dependency}-${config.name}`,
@@ -354,7 +342,7 @@ function buildDAGLayout(
           fontSize: 16,
         },
         labelBgStyle: {
-          fill: isHoverHighlighted ? (hoverColor === '#fb923c' ? '#fff7ed' : '#eff6ff') : '#fffbeb',
+          fill: isSelectionHighlighted ? (selectionColor === '#fb923c' ? '#fff7ed' : '#eff6ff') : '#fffbeb',
           fillOpacity: 0.7
         },
       });
