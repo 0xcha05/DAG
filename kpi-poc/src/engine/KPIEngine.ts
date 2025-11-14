@@ -64,11 +64,6 @@ export class KPIRebalancingEngine {
     const lockedKPIs = new Set<KPIName>(editConfig?.locksWhenEdited || []);
     lockedKPIs.add(editedKPI); // The edited KPI itself is locked
 
-    // When Sls U is edited, also lock Sls $ since we just recalculated it
-    if (editedKPI === 'Sls U') {
-      lockedKPIs.add('Sls $');
-    }
-
     // Phase 1: Linear calculations in the current week
     const calculationOrder = topologicalSort(this.configs, editedKPI, lockedKPIs);
 

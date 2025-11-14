@@ -92,7 +92,7 @@ export const DAGVisualization: React.FC<DAGVisualizationProps> = ({
   const [edges, , onEdgesChange] = useEdgesState(initialEdges);
 
   return (
-    <div className="w-full h-[600px] border border-gray-300 rounded-lg shadow-sm bg-gray-50">
+    <div className="w-full h-[700px] border border-gray-300 rounded-lg shadow-sm bg-gray-50">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -100,7 +100,12 @@ export const DAGVisualization: React.FC<DAGVisualizationProps> = ({
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
         fitView
-        minZoom={0.3}
+        fitViewOptions={{
+          padding: 0.2,
+          minZoom: 0.5,
+          maxZoom: 1.2,
+        }}
+        minZoom={0.2}
         maxZoom={2}
         defaultEdgeOptions={{
           type: 'smoothstep',
@@ -147,18 +152,19 @@ function buildDAGLayout(
   const edges: Edge[] = [];
 
   // Group KPIs by category
-  const editableKPIs = configs.filter(c => c.isEditable);
+  const editableKPIs = configs.filter(c => c.isEditable).sort((a, b) => a.name.localeCompare(b.name));
 
-  // Layout parameters
-  const horizontalSpacing = 250;
-  const verticalSpacing = 150;
+  // Layout parameters - increased spacing to prevent overlap
+  const horizontalSpacing = 350;
+  const verticalSpacing = 180;
 
-  // Position editable KPIs on the left
+  // Position editable KPIs on the left - vertically centered
+  const editableStartY = (editableKPIs.length > 0) ? -(editableKPIs.length - 1) * verticalSpacing / 2 : 0;
   editableKPIs.forEach((config, index) => {
     nodes.push({
       id: config.name,
       type: 'custom',
-      position: { x: 0, y: index * verticalSpacing },
+      position: { x: 0, y: editableStartY + index * verticalSpacing },
       data: {
         kpi: config.name,
         label: config.displayName,
@@ -175,13 +181,25 @@ function buildDAGLayout(
   const levels = groupByDependencyLevel(configs);
 
   levels.forEach((level, levelIndex) => {
-    level.forEach((config, indexInLevel) => {
+    // Sort within level for consistency
+    const sortedLevel = [...level].sort((a, b) => {
+      // Sort by number of dependencies (simpler ones first)
+      const aDeps = a.dependsOn.length;
+      const bDeps = b.dependsOn.length;
+      if (aDeps !== bDeps) return aDeps - bDeps;
+      return a.name.localeCompare(b.name);
+    });
+
+    // Center this level vertically
+    const levelStartY = (sortedLevel.length > 0) ? -(sortedLevel.length - 1) * verticalSpacing / 2 : 0;
+
+    sortedLevel.forEach((config, indexInLevel) => {
       nodes.push({
         id: config.name,
         type: 'custom',
         position: {
-          x: (levelIndex + 2) * horizontalSpacing,
-          y: indexInLevel * verticalSpacing,
+          x: (levelIndex + 1.5) * horizontalSpacing,
+          y: levelStartY + indexInLevel * verticalSpacing,
         },
         data: {
           kpi: config.name,
