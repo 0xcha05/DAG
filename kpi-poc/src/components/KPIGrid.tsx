@@ -162,18 +162,19 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
                 const isEditing =
                   editingCell?.week === week && editingCell?.kpi === config.name;
 
-                // Determine hover styles
-                const isHoveredCell = hoveredCell?.week === week && hoveredCell?.kpi === config.name;
-                const dependencyLevel = hoveredCell && hoveredCell.week === week ? affectedKPIsWithLevels.get(config.name) : undefined;
+                // Determine hover styles - apply to the hovered KPI across all weeks
+                const isHoveredCell = hoveredCell?.kpi === config.name;
+                const dependencyLevel = hoveredCell ? affectedKPIsWithLevels.get(config.name) : undefined;
 
                 let inlineStyle: React.CSSProperties = {};
                 if (isHoveredCell && config.isEditable && !lockedKPIs.has(config.name)) {
+                  // Highlight the hovered KPI across all weeks in blue
                   inlineStyle = {
                     backgroundColor: '#bfdbfe',
                     boxShadow: '0 0 0 2px #60a5fa',
                   };
                 } else if (dependencyLevel !== undefined) {
-                  // Different shades of orange based on dependency level
+                  // Different shades of orange based on dependency level - across all weeks
                   let bgColor = '#fed7aa'; // Level 1 - darker orange
                   let shadowColor = '#fb923c';
 
