@@ -173,10 +173,28 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
                 const isEditing =
                   editingCell?.week === week && editingCell?.kpi === config.name;
 
+                // Determine hover styles
+                const isHoveredCell = hoveredCell?.week === week && hoveredCell?.kpi === config.name;
+                const isAffectedByHover = hoveredCell && hoveredCell.week === week && affectedKPIs.has(config.name);
+
+                let inlineStyle: React.CSSProperties = {};
+                if (isHoveredCell && config.isEditable && !lockedKPIs.has(config.name)) {
+                  inlineStyle = {
+                    backgroundColor: '#bfdbfe',
+                    boxShadow: '0 0 0 2px #60a5fa',
+                  };
+                } else if (isAffectedByHover) {
+                  inlineStyle = {
+                    backgroundColor: '#fed7aa',
+                    boxShadow: '0 0 0 1px #fb923c',
+                  };
+                }
+
                 return (
                   <td
                     key={`${week}-${config.name}`}
                     className={getCellClassName(week, config.name, config)}
+                    style={inlineStyle}
                     onClick={() => handleCellClick(week, config.name, config)}
                     onMouseEnter={() => {
                       if (config.isEditable && !lockedKPIs.has(config.name)) {
