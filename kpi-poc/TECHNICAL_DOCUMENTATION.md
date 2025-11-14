@@ -9,6 +9,7 @@
 6. [Complex Components Explained](#complex-components-explained)
 7. [Pseudocode Walkthrough](#pseudocode-walkthrough)
 8. [Example Scenarios](#example-scenarios)
+9. [Dynamic KPI Templates](#dynamic-kpi-templates)
 
 ---
 
@@ -23,6 +24,7 @@ The KPI Rebalancing Engine is a proof-of-concept (POC) system that demonstrates 
 - Visual feedback showing cascading changes
 - Interactive dependency graph visualization
 - Comprehensive logging of user edits vs. system recalculations
+- **Configuration-driven KPI templates** - add new KPIs without code changes
 
 ---
 
@@ -1022,339 +1024,448 @@ Returns in Week 1 affect inventory availability 4 weeks later, with proper damag
 
 ---
 
-## Visual Feedback System
+## Dynamic KPI Templates
 
-### Grid Highlighting
+### Overview
 
-**Purpose:** Show users what changed and why.
+One of the most powerful features of the KPI Rebalancing Engine is its **configuration-driven architecture**. KPIs are defined as data templates rather than hard-coded logic, making the system highly flexible and extensible.
 
-**Highlight Types:**
+**Key Benefit:** Add new KPIs or modify existing ones without changing any code—just update the configuration file.
 
-1. **Yellow Pulse:** KPIs that changed value
-   - Fades after 2 seconds
-   - Shows both user edits and system recalculations
+### KPI Configuration Structure
 
-2. **Blue Highlight (Hover):** The KPI currently being hovered
-   - Shows user which KPI they're inspecting
+Each KPI is defined by a template with the following properties:
 
-3. **Orange Gradients (Hover):** Dependent KPIs at different levels
-   - **Dark Orange:** Level 1 (directly depends on hovered KPI)
-   - **Medium Orange:** Level 2 (2 steps away)
-   - **Light Orange:** Level 3+ (3+ steps away)
-
-**Example:**
 ```
-User hovers over "Sls U"
-
-Grid Display:
-  Sls U: [BLUE] ← hovered KPI
-  COGS: [DARK ORANGE] ← Level 1 dependent
-  GM $: [MEDIUM ORANGE] ← Level 2 dependent
-  GM %: [LIGHT ORANGE] ← Level 3 dependent
-```
-
-### DAG Visualization
-
-**Purpose:** Show dependency relationships graphically.
-
-**Interaction:**
-- Click on a node to highlight its dependencies
-- **Green nodes:** Parents (KPIs that the clicked node depends on)
-- **Orange nodes:** Children (KPIs that depend on the clicked node)
-- **Blue node:** The clicked node itself
-
-**Example:**
-```
-User clicks "GM $" node
-
-DAG Display:
-  Sls $ → [GM $] → GM %
-   ↓      [BLUE]   [ORANGE]
-  COGS
- [GREEN]
-
-Legend:
-  Green (Sls $, COGS): Parents - GM $ depends on these
-  Blue (GM $): Selected node
-  Orange (GM %): Children - this depends on GM $
+{
+  name: "COGS",                          // Unique identifier
+  displayName: "Cost of Goods Sold",    // Human-readable name
+  isEditable: false,                     // Can user edit directly?
+  formula: "Sls U * AUC",               // Mathematical formula (optional)
+  dependsOn: ["Sls U", "AUC"],          // Explicit dependencies (optional)
+  locksWhenEdited: [],                   // KPIs to lock when this is edited
+  description: "Total cost of units sold", // Help text
+  affectsWeeks: [                        // Multi-week effects (optional)
+    {
+      offset: 4,                         // Number of weeks in future
+      targetKPI: "Return Inv"            // Which KPI to affect
+    }
+  ]
+}
 ```
 
-### Logs Panel
+### Template Properties Explained
 
-**Purpose:** Audit trail of all edits and recalculations.
+#### 1. **name** (Required)
+- Unique identifier for the KPI
+- Used in formulas to reference this KPI
+- Example: `"Sls U"`, `"COGS"`, `"GM %"`
 
-**Features:**
-- **Blue entries:** User edits (manual changes)
-- **Green entries:** System recalculations (automatic)
-- **Expandable groups:** Click to see cascade of changes from one edit
-- **Calculation levels:** Shows dependency order (Level 1, Level 2, etc.)
-- **Formulas displayed:** See exact formula used for each recalculation
+#### 2. **displayName** (Optional)
+- Human-readable name shown in UI
+- If not provided, uses `name`
+- Example: `"Sales Units"` instead of `"Sls U"`
 
-**Example:**
+#### 3. **isEditable** (Required)
+- `true`: User can directly edit this value in the grid
+- `false`: Value is calculated from formula only
+- Example: `Sls U` is editable, `COGS` is not
+
+#### 4. **formula** (Optional)
+- Mathematical expression for calculating this KPI
+- Uses other KPI names as variables
+- Supports: `+`, `-`, `*`, `/`, `^`, `()`
+- Example: `"(Sls $ - COGS) / Sls $ * 100"`
+
+#### 5. **dependsOn** (Optional)
+- Explicit list of KPIs this one depends on
+- Can be auto-extracted from formula
+- Useful for KPIs without formulas (like BOP from EOP)
+- Example: `["Sls $", "COGS"]`
+
+#### 6. **locksWhenEdited** (Optional)
+- KPIs that should NOT be recalculated when this KPI is edited
+- Implements lock strategies for business constraints
+- Example: When editing `Sls U`, lock `["DR%", "Return %"]`
+
+#### 7. **affectsWeeks** (Optional)
+- Defines multi-week propagation effects
+- Specifies which KPI to update in future weeks
+- Example: `Return U` affects `Return Inv` 4 weeks later
+
+### How the System Uses Templates
+
+**Step 1: Load Configuration**
 ```
-Edit History
-
-[Blue] User Edit - 10:23:45 AM
-Week 1: Sls U changed from 1000 → 1200
-▼ Click to expand (4 cascading changes)
-
-  [Green] System Recalc - Level 1
-  Week 1: COGS changed from 10,000 → 12,000
-  Formula: Sls U * Unit Cost
-
-  [Green] System Recalc - Level 1
-  Week 1: Sls $ changed from 25,000 → 30,000
-  Formula: Sls U * Unit Retail Price
-
-  [Green] System Recalc - Level 2
-  Week 1: GM $ changed from 15,000 → 18,000
-  Formula: Sls $ - COGS
-
-  [Green] System Recalc - Level 3
-  Week 1: GM % changed from 60.0 → 60.0
-  Formula: (Sls $ - COGS) / Sls $ * 100
-```
-
----
-
-## Performance Considerations
-
-### Optimization Strategies
-
-1. **Memoization:**
-   - Cache dependency graph (only rebuild when configs change)
-   - Cache topological sort result
-   - Memoize affected KPIs during hover
-
-2. **Incremental Updates:**
-   - Only recalculate affected KPIs, not all KPIs
-   - Use topological sort to skip independent branches
-
-3. **Batching:**
-   - Group multi-week changes into single state update
-   - Reduce re-renders with React memoization
-
-4. **Lazy Evaluation:**
-   - Only compute hover highlights when actively hovering
-   - Don't recalculate non-visible weeks
-
-### Scalability
-
-**Current POC Limits:**
-- ~20 KPIs
-- ~8 weeks
-- ~160 cells total
-
-**Production Considerations:**
-- For 100+ KPIs, consider worker threads for calculation
-- For 52+ weeks, implement virtualization for grid
-- For complex formulas, consider compilation/caching
-
----
-
-## Edge Cases & Error Handling
-
-### Edge Case 1: Circular Dependencies
-
-**Problem:**
-```
-KPI A formula: "B + 1"
-KPI B formula: "A + 1"
-→ A depends on B, B depends on A → Circular!
+kpiConfigs = loadFromFile("kpiConfig.ts")
+allKPIs = kpiConfigs.map(config => config.name)
 ```
 
-**Detection:**
-Kahn's algorithm will detect this: if topological sort can't process all nodes, a cycle exists.
-
-**Handling:**
+**Step 2: Build Dependency Graph**
 ```
-IF sum(inDegrees) > 0 after topological sort:
-  ERROR: "Circular dependency detected between KPIs"
-  Show user which KPIs are involved in cycle
-```
+FOR EACH config IN kpiConfigs:
+  IF config.formula:
+    dependencies = extractVariablesFromFormula(config.formula)
+  ELSE IF config.dependsOn:
+    dependencies = config.dependsOn
+  ELSE:
+    dependencies = []
 
-### Edge Case 2: Negative Inventory
-
-**Problem:**
-Recalculation results in EOP U = -50 (sold more than available)
-
-**Handling:**
-- Allow negative values (indicates stockout)
-- Optionally: Add validation warnings in UI
-- Optionally: Prevent edit that would cause negative inventory
-
-### Edge Case 3: Division by Zero
-
-**Problem:**
-```
-Formula: "GM $ / Sls $"
-If Sls $ = 0 → division by zero!
+  // Add edges to DAG
+  FOR EACH dep IN dependencies:
+    addEdge(dep → config.name)
 ```
 
-**Handling:**
+**Step 3: Determine Editability**
 ```
-TRY:
-  result = evaluateFormula(formula)
-CATCH division by zero:
-  result = 0  // or NaN, or show error
-```
-
-### Edge Case 4: Missing Dependencies
-
-**Problem:**
-Formula references KPI that doesn't exist.
-
-**Handling:**
-```
-FUNCTION extractVariables(formula):
-  variables = tokenize(formula)
-
-  FOR EACH variable IN variables:
-    IF variable NOT IN kpiNames:
-      ERROR: "Unknown KPI '" + variable + "' in formula"
+IF config.isEditable:
+  enableEditing(config.name)
+ELSE:
+  disableEditing(config.name)
 ```
 
----
+**Step 4: Apply Lock Strategies**
+```
+IF user edits config.name:
+  lockedKPIs = config.locksWhenEdited
+  skipRecalculating(lockedKPIs)
+```
 
-## Testing Strategies
+**Step 5: Handle Multi-Week Effects**
+```
+IF config.affectsWeeks:
+  FOR EACH effect IN config.affectsWeeks:
+    targetWeek = currentWeek + effect.offset
+    updateKPI(targetWeek, effect.targetKPI)
+```
 
-### Unit Tests
+### Example: Adding a New KPI
 
-1. **Dependency Graph Builder:**
+**Scenario:** Add "Net Gross Margin %" = Net GM $ / Net Sls $
+
+**Step 1: Define Configuration**
+```javascript
+{
+  name: "Net GM %",
+  displayName: "Net Gross Margin %",
+  isEditable: false,
+  formula: "Net GM $ / Net Sls $ * 100",
+  dependsOn: ["Net GM $", "Net Sls $"],
+  locksWhenEdited: [],
+  description: "Gross margin percentage after returns"
+}
+```
+
+**Step 2: Add to Configuration Array**
+```javascript
+export const kpiConfigs: KPIConfig[] = [
+  // ... existing KPIs ...
+
+  {
+    name: "Net GM %",
+    displayName: "Net Gross Margin %",
+    isEditable: false,
+    formula: "Net GM $ / Net Sls $ * 100",
+    dependsOn: ["Net GM $", "Net Sls $"],
+    locksWhenEdited: [],
+    description: "Gross margin percentage after returns"
+  }
+];
+```
+
+**Step 3: System Automatically:**
+1. ✓ Extracts dependencies from formula: `["Net GM $", "Net Sls $"]`
+2. ✓ Adds edges to DAG: `Net GM $ → Net GM %`, `Net Sls $ → Net GM %`
+3. ✓ Updates topological sort to include new KPI in correct level
+4. ✓ Renders new row in grid
+5. ✓ Includes in DAG visualization
+6. ✓ Recalculates when dependencies change
+
+**No code changes required!** The system is fully configuration-driven.
+
+### Example: Modifying an Existing KPI Formula
+
+**Scenario:** Change COGS formula to include a shrinkage factor
+
+**Before:**
+```javascript
+{
+  name: "COGS",
+  formula: "Sls U * AUC",
+  dependsOn: ["Sls U", "AUC"]
+}
+```
+
+**After:**
+```javascript
+{
+  name: "COGS",
+  formula: "Sls U * AUC * (1 + Shrinkage %)",
+  dependsOn: ["Sls U", "AUC", "Shrinkage %"]
+}
+```
+
+**System Automatically:**
+1. ✓ Parses new formula
+2. ✓ Extracts new dependency: `Shrinkage %`
+3. ✓ Rebuilds DAG with new edge: `Shrinkage % → COGS`
+4. ✓ Updates topological sort
+5. ✓ Starts recalculating COGS when `Shrinkage %` changes
+
+### Example: Complex Multi-Week KPI
+
+**Scenario:** Add "Projected Stock Coverage" that looks 2 weeks ahead
+
+**Configuration:**
+```javascript
+{
+  name: "Stock Coverage",
+  displayName: "Projected Stock Coverage (Weeks)",
+  isEditable: false,
+  dependsOn: ["EOP U", "Sls U"],
+  locksWhenEdited: [],
+  description: "Weeks of inventory based on current run rate",
+  customCalculation: true  // Flag for special handling
+}
+```
+
+**Custom Calculation Logic:**
+```javascript
+// In the engine, check for customCalculation flag
+IF config.customCalculation AND config.name == "Stock Coverage":
+  // Look ahead 2 weeks and sum projected sales
+  projectedSales = 0
+  FOR week FROM currentWeek TO currentWeek + 2:
+    projectedSales += getData(week, "Sls U")
+
+  eopUnits = getData(currentWeek, "EOP U")
+  avgWeeklySales = projectedSales / 3
+
+  stockCoverage = eopUnits / avgWeeklySales
+  RETURN stockCoverage
+```
+
+### What Happens When You Update or Add a KPI
+
+**Scenario: Adding a New KPI**
+
+1. **Update Configuration File**
+   - Add new KPI object to `kpiConfigs` array
+   - Define formula, dependencies, editability, etc.
+
+2. **System Detects Change**
+   - On app reload, configuration is parsed
+   - New KPI is discovered
+
+3. **Dependency Graph Rebuilt**
+   - Formula parsed to extract variable references
+   - New edges added to DAG
+   - Topological sort recalculated to include new KPI
+
+4. **UI Automatically Updates**
+   - New row appears in KPI Grid
+   - New node appears in DAG Visualization
+   - Config Editor shows new KPI properties
+
+5. **Calculation Engine Updated**
+   - New KPI included in recalculation cycles
+   - Formula evaluator applies to new KPI
+   - Change tracking logs include new KPI
+
+6. **No Code Deployment Required**
+   - Just update configuration file
+   - System adapts automatically
+
+**Scenario: Modifying a KPI Formula**
+
+1. **Update Formula in Configuration**
+   ```javascript
+   // Before
+   formula: "Sls U * AUC"
+
+   // After
+   formula: "Sls U * AUC * 1.1"  // Add 10% overhead
    ```
-   TEST: Extract variables from formula
-     Input: "(Sls $ - COGS) / Sls $"
-     Expected: ["Sls $", "COGS"]
+
+2. **System Detects Change**
+   - Configuration reloaded
+   - Formula string updated
+
+3. **Dependencies Re-Extracted**
+   - Formula parsed again
+   - Dependencies confirmed (no change in this example)
+   - DAG remains same (no new edges needed)
+
+4. **Calculations Updated**
+   - Next time KPI is calculated, new formula is used
+   - Results immediately reflect formula change
+
+5. **Historical Data Unaffected**
+   - Only new calculations use new formula
+   - Existing cell values remain until recalculated
+
+**Scenario: Adding New Lock Strategy**
+
+1. **Update Configuration**
+   ```javascript
+   {
+     name: "DR%",
+     isEditable: true,
+     locksWhenEdited: ["AUR", "Sls U"]  // Added new locks
+   }
    ```
 
-2. **Topological Sort:**
-   ```
-   TEST: Sort simple DAG
-     Input: A → B → C
-     Expected: [[A], [B], [C]]
+2. **System Behavior**
+   - When user edits DR%, system reads `locksWhenEdited`
+   - AUR and Sls U are excluded from recalculation
+   - All other KPIs recalculate normally
 
-   TEST: Detect circular dependency
-     Input: A → B → A
-     Expected: Error thrown
-   ```
+3. **No Engine Changes**
+   - Lock strategy resolver reads from configuration
+   - No code modification needed
 
-3. **Formula Evaluation:**
-   ```
-   TEST: Evaluate arithmetic
-     Formula: "10 * 5 + 3"
-     Expected: 53
-   ```
+### Benefits of Template-Driven Architecture
 
-### Integration Tests
+1. **Rapid Prototyping**
+   - Test new KPIs in minutes, not hours
+   - Experiment with different formulas easily
+   - No development cycle needed
 
-1. **Single Edit Cascade:**
-   ```
-   TEST: Edit Sls U updates dependent KPIs
-     Action: Set Sls U = 1200
-     Expected:
-       - COGS recalculated
-       - Sls $ recalculated
-       - GM $ recalculated
-       - GM % recalculated
-   ```
+2. **Business User Empowerment**
+   - Business analysts can define new metrics
+   - No programmer required for formula changes
+   - Self-service analytics modeling
 
-2. **Multi-Week Propagation:**
-   ```
-   TEST: Week 1 EOP updates Week 2 BOP
-     Action: Edit Week 1 Sls U
-     Expected:
-       - Week 1 EOP changes
-       - Week 2 BOP = Week 1 EOP
-       - Week 2 EOP recalculated
-   ```
+3. **Maintainability**
+   - All KPI logic in one place
+   - Easy to audit and understand
+   - Version control tracks changes
 
-3. **Lock Strategy:**
-   ```
-   TEST: Locked KPIs not recalculated
-     Action: Edit Sls U (locks DR%)
-     Expected:
-       - DR% value unchanged
-       - Other KPIs recalculated normally
-   ```
+4. **Extensibility**
+   - Add dozens of KPIs without code bloat
+   - System scales with configuration size
+   - No architectural changes needed
 
-### User Acceptance Tests
+5. **Testing**
+   - Easy to create test configurations
+   - Validate formulas independently
+   - A/B test different calculation approaches
 
-1. **Visual Feedback:**
-   - Verify yellow highlights appear for changed cells
-   - Verify orange gradients show on hover
-   - Verify DAG highlights on click
+6. **Documentation**
+   - Configuration IS documentation
+   - Self-describing system
+   - Easy onboarding for new team members
 
-2. **Logs Accuracy:**
-   - Verify user edits logged as "user-edit"
-   - Verify system recalcs logged with correct trigger
-   - Verify calculation levels are accurate
+### Configuration Validation
 
-3. **Multi-Week Scenarios:**
-   - Edit Week 1, verify Week 2-8 update correctly
-   - Edit Return U, verify Return Inv appears 4 weeks later
+The system validates configurations on load:
 
----
+```
+FUNCTION validateConfiguration(kpiConfigs):
+  errors = []
 
-## Future Enhancements
+  // Check for duplicate names
+  names = kpiConfigs.map(c => c.name)
+  duplicates = findDuplicates(names)
+  IF duplicates.length > 0:
+    errors.add("Duplicate KPI names: " + duplicates)
 
-### Near-Term (v2)
+  // Check formula references
+  FOR EACH config IN kpiConfigs:
+    IF config.formula:
+      variables = extractVariables(config.formula)
+      FOR EACH variable IN variables:
+        IF variable NOT IN names:
+          errors.add("Unknown KPI '" + variable + "' in formula for " + config.name)
 
-1. **Undo/Redo:**
-   - Implement history stack for edits
-   - Allow reverting to previous states
+  // Check for circular dependencies
+  dag = buildDependencyGraph(kpiConfigs)
+  cycles = detectCycles(dag)
+  IF cycles.length > 0:
+    errors.add("Circular dependencies detected: " + cycles)
 
-2. **Bulk Edits:**
-   - Edit multiple cells at once
-   - Apply percentage changes across weeks
+  // Check lock strategy references
+  FOR EACH config IN kpiConfigs:
+    FOR EACH lockedKPI IN config.locksWhenEdited:
+      IF lockedKPI NOT IN names:
+        errors.add("Unknown KPI '" + lockedKPI + "' in lock strategy for " + config.name)
 
-3. **Validation Rules:**
-   - Prevent negative inventory
-   - Warn on unusual GM% values
-   - Flag constraint violations
+  IF errors.length > 0:
+    THROW "Configuration validation failed: " + errors
 
-### Mid-Term (v3)
+  RETURN true
+```
 
-1. **Scenario Comparison:**
-   - Save multiple scenarios
-   - Compare side-by-side
-   - What-if analysis
+### Real-World Example: Full KPI Configuration
 
-2. **Custom Lock Strategies:**
-   - User-defined lock rules
-   - Conditional locks based on context
+**Editable Base KPI:**
+```javascript
+{
+  name: "Sls U",
+  displayName: "Sales Units",
+  isEditable: true,
+  dependsOn: [],
+  locksWhenEdited: ["DR%", "Return %"],
+  description: "Total units sold in the period"
+}
+```
 
-3. **Formula Builder UI:**
-   - Visual formula editor
-   - Autocomplete for KPI names
-   - Syntax validation
+**Calculated KPI (Level 1):**
+```javascript
+{
+  name: "COGS",
+  displayName: "Cost of Goods Sold",
+  isEditable: false,
+  formula: "Sls U * AUC",
+  dependsOn: ["Sls U", "AUC"],
+  locksWhenEdited: [],
+  description: "Total cost of units sold"
+}
+```
 
-### Long-Term (v4)
+**Calculated KPI (Level 2):**
+```javascript
+{
+  name: "GM $",
+  displayName: "Gross Margin $",
+  isEditable: false,
+  formula: "Sls $ - COGS",
+  dependsOn: ["Sls $", "COGS"],
+  locksWhenEdited: [],
+  description: "Gross profit in dollars"
+}
+```
 
-1. **AI-Powered Insights:**
-   - Suggest optimal edits to hit targets
-   - Detect anomalies in data
-   - Recommend lock strategies
-
-2. **Collaboration:**
-   - Multi-user editing
-   - Change tracking per user
-   - Comment threads on cells
-
-3. **Integration:**
-   - Import from Excel/CSV
-   - Export to planning systems
-   - API for external tools
+**Multi-Week Effect KPI:**
+```javascript
+{
+  name: "Return U",
+  displayName: "Return Units",
+  isEditable: false,
+  formula: "Return % * Sls U",
+  dependsOn: ["Return %", "Sls U"],
+  locksWhenEdited: [],
+  description: "Number of units returned",
+  affectsWeeks: [
+    {
+      offset: 4,
+      targetKPI: "Return Inv"
+    }
+  ]
+}
+```
 
 ---
 
 ## Conclusion
 
-The KPI Rebalancing Engine demonstrates a powerful approach to managing interdependent metrics in retail merchandising. By leveraging graph theory (DAG), algorithmic sorting (Kahn's), and reactive UI patterns, the system provides:
+The KPI Rebalancing Engine demonstrates a powerful approach to managing interdependent metrics in retail merchandising. By leveraging graph theory (DAG), algorithmic sorting (Kahn's), and reactive UI patterns combined with a configuration-driven template system, the system provides:
 
 ✓ **Automatic recalculation** of dependent KPIs
 ✓ **Business constraint enforcement** via lock strategies
 ✓ **Multi-week effect handling** for realistic inventory modeling
-✓ **Visual feedback** showing cascading changes
+✓ **Configuration-driven flexibility** allowing new KPIs without code changes
+✓ **Template-based extensibility** for rapid prototyping and business user empowerment
 ✓ **Audit trail** distinguishing user edits from system recalculations
 
 **Key Takeaways:**
@@ -1362,88 +1473,11 @@ The KPI Rebalancing Engine demonstrates a powerful approach to managing interdep
 1. **DAG + Topological Sort** ensures correct calculation order
 2. **Lock strategies** maintain business rules during recalculation
 3. **Multi-week effects** model real-world inventory transitions
-4. **Visual feedback** improves user understanding and confidence
-5. **Comprehensive logging** provides auditability and transparency
+4. **Configuration templates** enable rapid KPI addition and modification
+5. **Formula parsing** automatically builds dependency relationships
+6. **Comprehensive logging** provides auditability and transparency
 
-This POC provides a foundation for production merchandising planning tools that can save analysts hours of manual work while reducing errors and improving decision-making quality.
-
----
-
-## Appendix: Complete KPI Configuration
-
-```javascript
-KPI Configurations:
-
-1. Sales Units (Sls U)
-   - Type: Editable
-   - Formula: None
-   - Lock Strategy: Lock DR%, Return %
-
-2. Unit Cost
-   - Type: Editable
-   - Formula: None
-
-3. Unit Retail Price
-   - Type: Editable
-   - Formula: None
-
-4. Cost of Goods Sold (COGS)
-   - Type: Calculated
-   - Formula: "Sls U * Unit Cost"
-
-5. Sales Dollars (Sls $)
-   - Type: Calculated
-   - Formula: "Sls U * Unit Retail Price"
-
-6. Gross Margin $ (GM $)
-   - Type: Calculated
-   - Formula: "Sls $ - COGS"
-
-7. Gross Margin % (GM %)
-   - Type: Calculated
-   - Formula: "(GM $ / Sls $) * 100"
-
-8. Discount Rate % (DR%)
-   - Type: Calculated
-   - Formula: "(1 - (Sls $ / (Sls U * Unit Retail Price))) * 100"
-
-9. Beginning of Period Units (BOP U)
-   - Type: Special (set from previous week's EOP)
-   - Formula: None
-
-10. Receipts
-    - Type: Editable
-    - Formula: None
-
-11. Return Units (Return U)
-    - Type: Editable
-    - Formula: None
-
-12. End of Period Units (EOP U)
-    - Type: Calculated
-    - Formula: "BOP U + Receipts - Sls U - Return U"
-
-13. Return Inventory (Return Inv)
-    - Type: Special (set from 4 weeks prior)
-    - Formula: None (computed as Return U * 0.9 from 4 weeks ago)
-
-(Additional KPIs for dollars: BOP $, EOP $, etc.)
-```
-
----
-
-## Glossary
-
-- **DAG:** Directed Acyclic Graph - graph structure with directed edges and no cycles
-- **Topological Sort:** Algorithm to order nodes based on dependencies
-- **Kahn's Algorithm:** Specific topological sort algorithm using in-degree counting
-- **In-Degree:** Number of incoming edges to a node
-- **Lock Strategy:** Rules defining which KPIs to prevent from recalculation
-- **Multi-Week Effect:** Changes that propagate across different time periods
-- **EOP:** End of Period - inventory/values at end of time period
-- **BOP:** Beginning of Period - inventory/values at start of time period
-- **Cascade:** Series of automatic recalculations triggered by one edit
-- **Memoization:** Caching computed values to avoid redundant calculations
+This POC provides a foundation for production merchandising planning tools that can save analysts hours of manual work while reducing errors and improving decision-making quality. The template-driven architecture ensures the system can evolve with business needs without requiring development resources for every change.
 
 ---
 
