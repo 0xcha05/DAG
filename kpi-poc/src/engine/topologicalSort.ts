@@ -40,7 +40,12 @@ export function topologicalSort(
       }
 
       graph.get(dependency)!.add(kpi);
-      inDegree.set(kpi, (inDegree.get(kpi) || 0) + 1);
+
+      // Only increment in-degree if dependency is also calculable
+      // If dependency is editable/locked, its value is already available
+      if (calculableKPIs.has(dependency)) {
+        inDegree.set(kpi, (inDegree.get(kpi) || 0) + 1);
+      }
     });
   });
 
