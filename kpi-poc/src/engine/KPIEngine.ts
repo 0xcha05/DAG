@@ -33,6 +33,22 @@ export class KPIRebalancingEngine {
     const currentValues = { ...currentWeek.values };
     const oldValue = currentValues[editedKPI];
 
+    // Special handling: When editing Sls U, recalculate Sls $ to maintain AUR
+    if (editedKPI === 'Sls U') {
+      const existingAUR = currentValues['AUR'];
+      const newSlsDollars = newValue * existingAUR;
+      const oldSlsDollars = currentValues['Sls $'];
+
+      currentValues['Sls $'] = newSlsDollars;
+      changes.push({
+        week: weekNumber,
+        kpi: 'Sls $',
+        oldValue: oldSlsDollars,
+        newValue: newSlsDollars,
+      });
+      affectedKPIs.add('Sls $');
+    }
+
     // Apply the edit
     currentValues[editedKPI] = newValue;
     changes.push({
@@ -47,6 +63,11 @@ export class KPIRebalancingEngine {
     const editConfig = this.configs.get(editedKPI);
     const lockedKPIs = new Set<KPIName>(editConfig?.locksWhenEdited || []);
     lockedKPIs.add(editedKPI); // The edited KPI itself is locked
+
+    // When Sls U is edited, also lock Sls $ since we just recalculated it
+    if (editedKPI === 'Sls U') {
+      lockedKPIs.add('Sls $');
+    }
 
     // Phase 1: Linear calculations in the current week
     const calculationOrder = topologicalSort(this.configs, editedKPI, lockedKPIs);
