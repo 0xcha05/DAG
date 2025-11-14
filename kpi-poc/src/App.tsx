@@ -3,12 +3,13 @@ import { KPIRebalancingEngine } from './engine/KPIEngine';
 import { KPIGrid } from './components/KPIGrid';
 import { DAGVisualization } from './components/DAGVisualization';
 import { ConfigEditor } from './components/ConfigEditor';
+import { LogsPanel } from './components/LogsPanel';
 import { kpiConfigs } from './data/kpiConfig';
 import { generateInitialData, cloneProductData } from './data/initialData';
-import type { ProductData, KPIName, KPIConfig } from './types';
-import { TrendingUp, Network, Settings, RefreshCw, AlertCircle } from 'lucide-react';
+import type { ProductData, KPIName, KPIConfig, LogEntry } from './types';
+import { TrendingUp, Network, Settings, RefreshCw, AlertCircle, FileText } from 'lucide-react';
 
-type TabType = 'grid' | 'dag' | 'config';
+type TabType = 'grid' | 'dag' | 'config' | 'logs';
 
 function App() {
   const [productData, setProductData] = useState<ProductData>(generateInitialData());
@@ -26,6 +27,7 @@ function App() {
     value: number;
   } | null>(null);
   const [changeLog, setChangeLog] = useState<string[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
 
   const handleEditKPI = (week: number, kpi: KPIName, value: number) => {
     try {
@@ -66,6 +68,9 @@ function App() {
       );
       setChangeLog(prev => [...logEntries, ...prev].slice(0, 20)); // Keep last 20 changes
 
+      // Add to logs
+      setLogs(prev => [...result.logs, ...prev]); // Prepend new logs
+
       // Clear highlights after 3 seconds
       setTimeout(() => {
         setHighlightedChanges(new Set());
@@ -97,6 +102,7 @@ function App() {
       setLockedKPIs(new Set());
       setLastEdit(null);
       setChangeLog([]);
+      setLogs([]);
     }
   };
 
@@ -188,6 +194,22 @@ function App() {
                 <Settings className="w-4 h-4" />
                 Configuration
               </button>
+              <button
+                onClick={() => setActiveTab('logs')}
+                className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
+                  activeTab === 'logs'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <FileText className="w-4 h-4" />
+                Logs
+                {logs.length > 0 && (
+                  <span className="bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded-full">
+                    {logs.filter(l => l.type === 'user-edit').length}
+                  </span>
+                )}
+              </button>
             </nav>
           </div>
 
@@ -247,6 +269,25 @@ function App() {
                   </ul>
                 </div>
                 <ConfigEditor configs={configs} onUpdateConfig={handleUpdateConfig} />
+              </div>
+            )}
+
+            {activeTab === 'logs' && (
+              <div>
+                <div className="mb-4">
+                  <h3 className="text-sm font-semibold text-gray-700 mb-2">
+                    Edit History & Logs:
+                  </h3>
+                  <ul className="text-sm text-gray-600 space-y-1">
+                    <li>• Blue entries: User edits (manual changes)</li>
+                    <li>• Green entries: System recalculations (cascading effects)</li>
+                    <li>• Click to expand and view triggered recalculations</li>
+                    <li>• Calculation levels show dependency order</li>
+                  </ul>
+                </div>
+                <div className="bg-white border border-gray-200 rounded-lg" style={{ height: '600px' }}>
+                  <LogsPanel logs={logs} />
+                </div>
               </div>
             )}
           </div>

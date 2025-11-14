@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import type { ProductData, KPIName, KPIConfig } from '../types';
 import { formatKPIValue, parseKPIValue } from '../engine/formulas';
 import { Edit2, Lock, Calculator } from 'lucide-react';
@@ -20,6 +20,46 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
 }) => {
   const [editingCell, setEditingCell] = useState<{ week: number; kpi: KPIName } | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [hoveredCell, setHoveredCell] = useState<{ week: number; kpi: KPIName } | null>(null);
+
+  // Build dependency map: which KPIs depend on each KPI
+  const dependencyMap = useMemo(() => {
+    const map = new Map<KPIName, Set<KPIName>>();
+
+    configs.forEach(config => {
+      config.dependsOn.forEach(dependency => {
+        if (!map.has(dependency)) {
+          map.set(dependency, new Set());
+        }
+        map.get(dependency)!.add(config.name);
+      });
+    });
+
+    return map;
+  }, [configs]);
+
+  // Get all KPIs that would be affected if we edit the hovered KPI
+  const getAffectedKPIs = (kpi: KPIName): Set<KPIName> => {
+    const affected = new Set<KPIName>();
+    const queue: KPIName[] = [kpi];
+    const visited = new Set<KPIName>();
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+
+      const dependents = dependencyMap.get(current);
+      if (dependents) {
+        dependents.forEach(dep => {
+          affected.add(dep);
+          queue.push(dep);
+        });
+      }
+    }
+
+    return affected;
+  };
 
   const weeks = Array.from(productData.weeks.keys()).sort((a, b) => a - b);
 
@@ -57,10 +97,19 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
     const isLocked = lockedKPIs.has(kpi);
     const isEditable = config.isEditable && !isLocked;
 
-    let classes = 'px-3 py-2 text-right font-mono text-sm border-r border-gray-200 ';
+    // Check if this cell is affected by the hovered cell
+    const isHoveredCell = hoveredCell?.week === week && hoveredCell?.kpi === kpi;
+    const isAffectedByHover = hoveredCell && hoveredCell.week === week &&
+                              getAffectedKPIs(hoveredCell.kpi).has(kpi);
+
+    let classes = 'px-3 py-2 text-right font-mono text-sm border-r border-gray-200 transition-colors ';
 
     if (isHighlighted) {
       classes += 'bg-yellow-100 animate-pulse ';
+    } else if (isHoveredCell && isEditable) {
+      classes += 'bg-blue-200 ring-2 ring-blue-400 cursor-pointer ';
+    } else if (isAffectedByHover) {
+      classes += 'bg-orange-100 ring-1 ring-orange-300 ';
     } else if (isLocked) {
       classes += 'bg-gray-100 text-gray-500 ';
     } else if (isEditable) {
@@ -123,6 +172,12 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
                     key={`${week}-${config.name}`}
                     className={getCellClassName(week, config.name, config)}
                     onClick={() => handleCellClick(week, config.name, config)}
+                    onMouseEnter={() => {
+                      if (config.isEditable && !lockedKPIs.has(config.name)) {
+                        setHoveredCell({ week, kpi: config.name });
+                      }
+                    }}
+                    onMouseLeave={() => setHoveredCell(null)}
                   >
                     {isEditing ? (
                       <input

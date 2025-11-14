@@ -1,4 +1,4 @@
-import type { KPIConfig, KPIName, WeekData, RebalancingResult, ProductData } from '../types';
+import type { KPIConfig, KPIName, WeekData, RebalancingResult, ProductData, LogEntry } from '../types';
 import { topologicalSort } from './topologicalSort';
 import { evaluateFormula } from './formulas';
 
@@ -22,6 +22,7 @@ export class KPIRebalancingEngine {
     const changes: RebalancingResult['changes'] = [];
     const affectedKPIs = new Set<KPIName>();
     const updatedWeeks = new Map<number, WeekData>();
+    const logs: LogEntry[] = [];
 
     // Get the current week's data
     const currentWeek = productData.weeks.get(weekNumber);
@@ -32,6 +33,17 @@ export class KPIRebalancingEngine {
     // Clone current values
     const currentValues = { ...currentWeek.values };
     const oldValue = currentValues[editedKPI];
+
+    // Log the user edit
+    logs.push({
+      id: `${Date.now()}-user-${editedKPI}`,
+      timestamp: new Date(),
+      type: 'user-edit',
+      kpi: editedKPI,
+      oldValue,
+      newValue,
+      week: weekNumber,
+    });
 
     // Special handling: When editing Sls U, recalculate Sls $ to maintain AUR
     if (editedKPI === 'Sls U') {
@@ -47,6 +59,20 @@ export class KPIRebalancingEngine {
         newValue: newSlsDollars,
       });
       affectedKPIs.add('Sls $');
+
+      // Log the automatic Sls $ recalculation
+      logs.push({
+        id: `${Date.now()}-system-Sls $`,
+        timestamp: new Date(),
+        type: 'system-recalc',
+        kpi: 'Sls $',
+        oldValue: oldSlsDollars,
+        newValue: newSlsDollars,
+        week: weekNumber,
+        triggeredBy: editedKPI,
+        calculationLevel: 0,
+        formula: 'Sls U * AUR',
+      });
     }
 
     // Apply the edit
@@ -73,8 +99,10 @@ export class KPIRebalancingEngine {
     console.log('[KPIEngine] Calculation order:', calculationOrder);
     console.log('[KPIEngine] Current values:', currentValues);
 
-    for (const level of calculationOrder) {
-      console.log(`\n[KPIEngine] === Level with ${level.length} KPIs ===`);
+    for (let levelIndex = 0; levelIndex < calculationOrder.length; levelIndex++) {
+      const level = calculationOrder[levelIndex];
+      console.log(`\n[KPIEngine] === Level ${levelIndex + 1} with ${level.length} KPIs ===`);
+
       for (const kpi of level) {
         const config = this.configs.get(kpi);
         if (!config || !config.formula) {
@@ -96,6 +124,20 @@ export class KPIRebalancingEngine {
             kpi,
             oldValue: oldKPIValue,
             newValue: newKPIValue,
+          });
+
+          // Log the system recalculation
+          logs.push({
+            id: `${Date.now()}-${levelIndex}-${kpi}`,
+            timestamp: new Date(),
+            type: 'system-recalc',
+            kpi,
+            oldValue: oldKPIValue,
+            newValue: newKPIValue,
+            week: weekNumber,
+            triggeredBy: editedKPI,
+            calculationLevel: levelIndex + 1,
+            formula: config.formula,
           });
         }
       }
@@ -127,6 +169,7 @@ export class KPIRebalancingEngine {
       affectedKPIs,
       calculationOrder,
       changes,
+      logs,
     };
   }
 

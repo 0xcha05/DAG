@@ -69,6 +69,7 @@ export interface RebalancingResult {
     oldValue: number;
     newValue: number;
   }[];
+  logs: LogEntry[];
 }
 
 export interface DAGNode {
@@ -82,4 +83,20 @@ export interface DAGEdge {
   source: string;
   target: string;
   label?: string;
+}
+
+export type LogEntryType = 'user-edit' | 'system-recalc';
+
+export interface LogEntry {
+  id: string;
+  timestamp: Date;
+  type: LogEntryType;
+  kpi: KPIName;
+  oldValue: number;
+  newValue: number;
+  week: number;
+  // For system recalculations
+  triggeredBy?: KPIName;
+  calculationLevel?: number;
+  formula?: string;
 }
