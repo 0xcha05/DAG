@@ -220,6 +220,7 @@ function App() {
                   <h3 className="text-sm font-semibold text-gray-700 mb-2">Instructions:</h3>
                   <ul className="text-sm text-gray-600 space-y-1">
                     <li>• Click on any editable cell (blue background) to modify values</li>
+                    <li>• Hover over editable cells to preview cascading effects (darker to lighter orange)</li>
                     <li>• Watch dependent KPIs recalculate automatically</li>
                     <li>• Yellow highlights show changed values</li>
                     <li>• Locked KPIs (gray) maintain their values during edits</li>
@@ -242,10 +243,10 @@ function App() {
                     Dependency Graph:
                   </h3>
                   <ul className="text-sm text-gray-600 space-y-1">
-                    <li>• Blue nodes: Editable KPIs</li>
-                    <li>• Green nodes: Calculated KPIs</li>
-                    <li>• Arrows show dependencies (A → B means B depends on A)</li>
-                    <li>• Yellow highlights show affected KPIs after edits</li>
+                    <li>• Click any node to highlight dependencies (click again to deselect)</li>
+                    <li>• Purple: Selected node | Blue: Parents | Orange: Children</li>
+                    <li>• Blue nodes: Editable KPIs | Green nodes: Calculated KPIs</li>
+                    <li>• Arrows show data flow direction</li>
                   </ul>
                 </div>
                 <DAGVisualization

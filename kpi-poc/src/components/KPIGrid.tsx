@@ -38,29 +38,31 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
     return map;
   }, [configs]);
 
-  // Memoize affected KPIs for the currently hovered cell
-  const affectedKPIs = useMemo(() => {
-    if (!hoveredCell) return new Set<KPIName>();
+  // Memoize affected KPIs with their dependency levels
+  const affectedKPIsWithLevels = useMemo(() => {
+    if (!hoveredCell) return new Map<KPIName, number>();
 
-    const affected = new Set<KPIName>();
-    const queue: KPIName[] = [hoveredCell.kpi];
+    const levels = new Map<KPIName, number>();
+    const queue: { kpi: KPIName; level: number }[] = [{ kpi: hoveredCell.kpi, level: 0 }];
     const visited = new Set<KPIName>();
 
     while (queue.length > 0) {
-      const current = queue.shift()!;
+      const { kpi: current, level } = queue.shift()!;
       if (visited.has(current)) continue;
       visited.add(current);
 
       const dependents = dependencyMap.get(current);
       if (dependents) {
         dependents.forEach(dep => {
-          affected.add(dep);
-          queue.push(dep);
+          if (!visited.has(dep)) {
+            levels.set(dep, level + 1);
+            queue.push({ kpi: dep, level: level + 1 });
+          }
         });
       }
     }
 
-    return affected;
+    return levels;
   }, [hoveredCell, dependencyMap]);
 
   const weeks = Array.from(productData.weeks.keys()).sort((a, b) => a - b);
@@ -162,7 +164,7 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
 
                 // Determine hover styles
                 const isHoveredCell = hoveredCell?.week === week && hoveredCell?.kpi === config.name;
-                const isAffectedByHover = hoveredCell && hoveredCell.week === week && affectedKPIs.has(config.name);
+                const dependencyLevel = hoveredCell && hoveredCell.week === week ? affectedKPIsWithLevels.get(config.name) : undefined;
 
                 let inlineStyle: React.CSSProperties = {};
                 if (isHoveredCell && config.isEditable && !lockedKPIs.has(config.name)) {
@@ -170,10 +172,22 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
                     backgroundColor: '#bfdbfe',
                     boxShadow: '0 0 0 2px #60a5fa',
                   };
-                } else if (isAffectedByHover) {
+                } else if (dependencyLevel !== undefined) {
+                  // Different shades of orange based on dependency level
+                  let bgColor = '#fed7aa'; // Level 1 - darker orange
+                  let shadowColor = '#fb923c';
+
+                  if (dependencyLevel === 2) {
+                    bgColor = '#fde8d0'; // Level 2 - medium orange
+                    shadowColor = '#fdba74';
+                  } else if (dependencyLevel >= 3) {
+                    bgColor = '#fef3e6'; // Level 3+ - light orange
+                    shadowColor = '#fed7aa';
+                  }
+
                   inlineStyle = {
-                    backgroundColor: '#fed7aa',
-                    boxShadow: '0 0 0 1px #fb923c',
+                    backgroundColor: bgColor,
+                    boxShadow: `0 0 0 1px ${shadowColor}`,
                   };
                 }
 
