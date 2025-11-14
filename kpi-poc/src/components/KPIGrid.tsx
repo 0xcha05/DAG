@@ -60,6 +60,7 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
       }
     }
 
+    console.log(`[GridHover] Hovering ${hoveredCell.kpi} in week ${hoveredCell.week}, affects:`, Array.from(affected));
     return affected;
   }, [hoveredCell, dependencyMap]);
 
@@ -102,6 +103,10 @@ export const KPIGrid: React.FC<KPIGridProps> = ({
     // Check if this cell is affected by the hovered cell
     const isHoveredCell = hoveredCell?.week === week && hoveredCell?.kpi === kpi;
     const isAffectedByHover = hoveredCell && hoveredCell.week === week && affectedKPIs.has(kpi);
+
+    if (isAffectedByHover) {
+      console.log(`[GridHover] Cell ${kpi} in week ${week} should be ORANGE`);
+    }
 
     let classes = 'px-3 py-2 text-right font-mono text-sm border-r border-gray-200 transition-all duration-150 ';
 
