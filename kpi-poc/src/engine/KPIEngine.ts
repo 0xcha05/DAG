@@ -93,27 +93,17 @@ export class KPIRebalancingEngine {
     // Phase 1: Linear calculations in the current week
     const calculationOrder = topologicalSort(this.configs, editedKPI, lockedKPIs);
 
-    console.log('[KPIEngine] ========== REBALANCE START ==========');
-    console.log('[KPIEngine] Edited:', editedKPI, '=', newValue);
-    console.log('[KPIEngine] Locked KPIs:', Array.from(lockedKPIs));
-    console.log('[KPIEngine] Calculation order:', calculationOrder);
-    console.log('[KPIEngine] Current values:', currentValues);
-
     for (let levelIndex = 0; levelIndex < calculationOrder.length; levelIndex++) {
       const level = calculationOrder[levelIndex];
-      console.log(`\n[KPIEngine] === Level ${levelIndex + 1} with ${level.length} KPIs ===`);
 
       for (const kpi of level) {
         const config = this.configs.get(kpi);
         if (!config || !config.formula) {
-          console.log(`  [SKIP] ${kpi} - no formula`);
           continue;
         }
 
         const oldKPIValue = currentValues[kpi];
-        console.log(`  [CALC] ${kpi}: "${config.formula}"`);
         const newKPIValue = evaluateFormula(config.formula, currentValues);
-        console.log(`    ${oldKPIValue} → ${newKPIValue}`);
 
         currentValues[kpi] = newKPIValue;
         affectedKPIs.add(kpi);
@@ -142,7 +132,6 @@ export class KPIRebalancingEngine {
         }
       }
     }
-    console.log('[KPIEngine] ========== REBALANCE END ==========\n');
 
     // Update current week
     updatedWeeks.set(weekNumber, {
