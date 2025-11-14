@@ -7,6 +7,8 @@ import {
   useNodesState,
   useEdgesState,
   MarkerType,
+  Handle,
+  Position,
 } from '@xyflow/react';
 import type { Node, Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -38,21 +40,37 @@ const CustomNode = ({ data }: any) => {
     : 'bg-green-50';
 
   return (
-    <div
-      className={`px-4 py-3 rounded-lg border-2 ${borderColor} ${bgColor} shadow-md min-w-[160px] cursor-pointer hover:shadow-lg transition-shadow`}
-      onClick={() => data.onClick?.(data.kpi)}
-    >
-      <div className="flex items-center gap-2 mb-1">
-        <Icon className="w-4 h-4" />
-        <span className="font-semibold text-sm">{data.label}</span>
-      </div>
-      <div className="text-xs text-gray-600">{data.kpi}</div>
-      {data.formula && (
-        <div className="text-xs text-gray-500 mt-1 font-mono bg-white px-2 py-1 rounded">
-          {data.formula}
+    <>
+      {/* Input handle (left side - receives connections) */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        style={{ background: '#6b7280', width: 8, height: 8 }}
+      />
+
+      <div
+        className={`px-4 py-3 rounded-lg border-2 ${borderColor} ${bgColor} shadow-md min-w-[160px] cursor-pointer hover:shadow-lg transition-shadow`}
+        onClick={() => data.onClick?.(data.kpi)}
+      >
+        <div className="flex items-center gap-2 mb-1">
+          <Icon className="w-4 h-4" />
+          <span className="font-semibold text-sm">{data.label}</span>
         </div>
-      )}
-    </div>
+        <div className="text-xs text-gray-600">{data.kpi}</div>
+        {data.formula && (
+          <div className="text-xs text-gray-500 mt-1 font-mono bg-white px-2 py-1 rounded">
+            {data.formula}
+          </div>
+        )}
+      </div>
+
+      {/* Output handle (right side - sends connections) */}
+      <Handle
+        type="source"
+        position={Position.Right}
+        style={{ background: '#6b7280', width: 8, height: 8 }}
+      />
+    </>
   );
 };
 
@@ -82,18 +100,34 @@ export const DAGVisualization: React.FC<DAGVisualizationProps> = ({
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
         fitView
-        minZoom={0.5}
-        maxZoom={1.5}
+        minZoom={0.3}
+        maxZoom={2}
+        defaultEdgeOptions={{
+          type: 'smoothstep',
+          animated: false,
+        }}
+        proOptions={{ hideAttribution: true }}
       >
-        <Background />
-        <Controls />
+        <Background
+          color="#9ca3af"
+          gap={16}
+          size={1}
+        />
+        <Controls
+          showZoom={true}
+          showFitView={true}
+          showInteractive={true}
+        />
         <MiniMap
+          nodeStrokeWidth={3}
           nodeColor={(node) => {
             if (node.data.isHighlighted) return '#fef08a';
             if (node.data.isLocked) return '#e5e7eb';
             if (node.data.isEditable) return '#dbeafe';
             return '#d1fae5';
           }}
+          maskColor="rgba(0, 0, 0, 0.1)"
+          position="bottom-right"
         />
       </ReactFlow>
     </div>
@@ -165,19 +199,33 @@ function buildDAGLayout(
   // Create edges based on dependencies
   configs.forEach(config => {
     config.dependsOn.forEach(dependency => {
+      const isHighlighted = highlightedKPIs.has(config.name) || highlightedKPIs.has(dependency);
+
       edges.push({
         id: `${dependency}-${config.name}`,
         source: dependency,
         target: config.name,
         type: 'smoothstep',
-        animated: highlightedKPIs.has(config.name),
+        animated: isHighlighted,
         style: {
-          stroke: highlightedKPIs.has(config.name) ? '#fbbf24' : '#9ca3af',
-          strokeWidth: highlightedKPIs.has(config.name) ? 3 : 2,
+          stroke: isHighlighted ? '#fbbf24' : '#9ca3af',
+          strokeWidth: isHighlighted ? 3 : 2,
         },
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: highlightedKPIs.has(config.name) ? '#fbbf24' : '#9ca3af',
+          width: 20,
+          height: 20,
+          color: isHighlighted ? '#fbbf24' : '#9ca3af',
+        },
+        label: isHighlighted ? '→' : undefined,
+        labelStyle: {
+          fill: '#fbbf24',
+          fontWeight: 700,
+          fontSize: 16,
+        },
+        labelBgStyle: {
+          fill: '#fffbeb',
+          fillOpacity: 0.7
         },
       });
     });
