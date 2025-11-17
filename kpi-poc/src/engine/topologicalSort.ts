@@ -1,4 +1,5 @@
 import type { KPIConfig, KPIName } from '../types';
+import { hasCustomHandler } from './customKPIHandlers';
 
 /**
  * Performs topological sort on KPI dependencies using Kahn's algorithm.
@@ -21,7 +22,8 @@ export function topologicalSort(
 
   // Initialize graph
   configs.forEach((config, kpi) => {
-    if (!config.formula) return; // Skip non-calculated KPIs
+    // Skip KPIs that have neither formula nor custom handler
+    if (!config.formula && !hasCustomHandler(kpi)) return;
     if (lockedKPIs.has(kpi)) return; // Skip locked KPIs
     if (kpi === editedKPI) return; // Skip the edited KPI itself
 
