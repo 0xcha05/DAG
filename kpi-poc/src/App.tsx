@@ -4,12 +4,15 @@ import { KPIGrid } from './components/KPIGrid';
 import { DAGVisualization } from './components/DAGVisualization';
 import { ConfigEditor } from './components/ConfigEditor';
 import { LogsPanel } from './components/LogsPanel';
+import { QueryDisplay } from './components/QueryDisplay';
 import { kpiConfigs } from './data/kpiConfig';
 import { generateInitialData, cloneProductData } from './data/initialData';
 import type { ProductData, KPIName, KPIConfig, LogEntry } from './types';
-import { TrendingUp, Network, Settings, RefreshCw, AlertCircle, FileText } from 'lucide-react';
+import { TrendingUp, Network, Settings, RefreshCw, AlertCircle, FileText, Database } from 'lucide-react';
+import { generateRebalancingQueries, type GeneratedQuery } from './services/clickhouse-query-service';
 
 type TabType = 'grid' | 'dag' | 'config' | 'logs';
+type ExecutionMode = 'in-memory' | 'clickhouse';
 
 function App() {
   const [productData, setProductData] = useState<ProductData>(generateInitialData());
@@ -28,6 +31,9 @@ function App() {
   } | null>(null);
   const [changeLog, setChangeLog] = useState<string[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>('in-memory');
+  const [generatedQueries, setGeneratedQueries] = useState<GeneratedQuery[]>([]);
+  const [showQueries, setShowQueries] = useState(false);
 
   const handleEditKPI = (week: number, kpi: KPIName, value: number) => {
     try {
@@ -37,46 +43,84 @@ function App() {
       // Run the rebalancing engine
       const result = engine.rebalance(newProductData, week, kpi, value);
 
-      // Apply the updates
-      result.updatedWeeks.forEach((weekData, weekNum) => {
-        newProductData.weeks.set(weekNum, weekData);
-      });
+      if (executionMode === 'clickhouse') {
+        // Generate ClickHouse queries instead of executing
+        const queries = generateRebalancingQueries(
+          productData.productId,
+          2024, // Year - could be made dynamic
+          result,
+          kpi,
+          week,
+          value
+        );
 
-      setProductData(newProductData);
+        setGeneratedQueries(queries);
+        setShowQueries(true);
 
-      // Highlight the changes
-      const changes = new Set<string>();
-      result.changes.forEach(change => {
-        changes.add(`${change.week}-${change.kpi}`);
-      });
-      setHighlightedChanges(changes);
-      setHighlightedKPIs(result.affectedKPIs);
+        // Still update UI to show what would change
+        setLastEdit({ week, kpi, value });
 
-      // Get locked KPIs
-      const config = engine.getConfig(kpi);
-      const locked = new Set<KPIName>(config?.locksWhenEdited || []);
-      locked.add(kpi);
-      setLockedKPIs(locked);
+        const changes = new Set<string>();
+        result.changes.forEach(change => {
+          changes.add(`${change.week}-${change.kpi}`);
+        });
+        setHighlightedChanges(changes);
+        setHighlightedKPIs(result.affectedKPIs);
 
-      // Update last edit
-      setLastEdit({ week, kpi, value });
+        const config = engine.getConfig(kpi);
+        const locked = new Set<KPIName>(config?.locksWhenEdited || []);
+        locked.add(kpi);
+        setLockedKPIs(locked);
 
-      // Add to change log
-      const logEntries = result.changes.map(
-        change =>
-          `W${change.week} ${change.kpi}: ${change.oldValue.toFixed(2)} → ${change.newValue.toFixed(2)}`
-      );
-      setChangeLog(prev => [...logEntries, ...prev].slice(0, 20)); // Keep last 20 changes
+        // Clear highlights after showing queries
+        setTimeout(() => {
+          setHighlightedChanges(new Set());
+          setHighlightedKPIs(new Set());
+          setLockedKPIs(new Set());
+        }, 5000);
+      } else {
+        // In-memory execution (original behavior)
+        // Apply the updates
+        result.updatedWeeks.forEach((weekData, weekNum) => {
+          newProductData.weeks.set(weekNum, weekData);
+        });
 
-      // Add to logs
-      setLogs(prev => [...result.logs, ...prev]); // Prepend new logs
+        setProductData(newProductData);
 
-      // Clear highlights after 3 seconds
-      setTimeout(() => {
-        setHighlightedChanges(new Set());
-        setHighlightedKPIs(new Set());
-        setLockedKPIs(new Set());
-      }, 3000);
+        // Highlight the changes
+        const changes = new Set<string>();
+        result.changes.forEach(change => {
+          changes.add(`${change.week}-${change.kpi}`);
+        });
+        setHighlightedChanges(changes);
+        setHighlightedKPIs(result.affectedKPIs);
+
+        // Get locked KPIs
+        const config = engine.getConfig(kpi);
+        const locked = new Set<KPIName>(config?.locksWhenEdited || []);
+        locked.add(kpi);
+        setLockedKPIs(locked);
+
+        // Update last edit
+        setLastEdit({ week, kpi, value });
+
+        // Add to change log
+        const logEntries = result.changes.map(
+          change =>
+            `W${change.week} ${change.kpi}: ${change.oldValue.toFixed(2)} → ${change.newValue.toFixed(2)}`
+        );
+        setChangeLog(prev => [...logEntries, ...prev].slice(0, 20)); // Keep last 20 changes
+
+        // Add to logs
+        setLogs(prev => [...result.logs, ...prev]); // Prepend new logs
+
+        // Clear highlights after 3 seconds
+        setTimeout(() => {
+          setHighlightedChanges(new Set());
+          setHighlightedKPIs(new Set());
+          setLockedKPIs(new Set());
+        }, 3000);
+      }
     } catch (error) {
       console.error('Error rebalancing KPIs:', error);
       alert(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -121,13 +165,48 @@ function App() {
                 </p>
               </div>
             </div>
-            <button
-              onClick={handleReset}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-            >
-              <RefreshCw className="w-4 h-4" />
-              Reset Data
-            </button>
+            <div className="flex items-center gap-3">
+              {/* Execution Mode Toggle */}
+              <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-lg">
+                <button
+                  onClick={() => setExecutionMode('in-memory')}
+                  className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                    executionMode === 'in-memory'
+                      ? 'bg-white text-blue-600 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  In-Memory
+                </button>
+                <button
+                  onClick={() => setExecutionMode('clickhouse')}
+                  className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                    executionMode === 'clickhouse'
+                      ? 'bg-white text-green-600 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <Database className="w-4 h-4" />
+                  ClickHouse
+                </button>
+              </div>
+              <button
+                onClick={handleReset}
+                className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Reset Data
+              </button>
+            </div>
+          </div>
+          {/* Mode Description */}
+          <div className="mt-3 text-xs text-gray-600">
+            {executionMode === 'in-memory' ? (
+              <span>✓ In-Memory Mode: Changes are applied immediately and data is updated in real-time</span>
+            ) : (
+              <span className="text-green-600">⚡ ClickHouse Mode: Generates SQL queries without executing (preview only)</span>
+            )}
           </div>
         </div>
       </header>
@@ -221,8 +300,17 @@ function App() {
                   <ul className="text-sm text-gray-600 space-y-1">
                     <li>• Click on any editable cell (blue background) to modify values</li>
                     <li>• Hover over editable cells to preview cascading effects (darker to lighter orange)</li>
-                    <li>• Watch dependent KPIs recalculate automatically</li>
-                    <li>• Yellow highlights show changed values</li>
+                    {executionMode === 'in-memory' ? (
+                      <>
+                        <li>• Watch dependent KPIs recalculate automatically</li>
+                        <li>• Yellow highlights show changed values</li>
+                      </>
+                    ) : (
+                      <>
+                        <li className="text-green-600 font-medium">• ClickHouse mode: Edits will generate SQL queries instead of updating data</li>
+                        <li className="text-green-600 font-medium">• Queries show INSERT (logs) and UPDATE (values) statements</li>
+                      </>
+                    )}
                     <li>• Locked KPIs (gray) maintain their values during edits</li>
                   </ul>
                 </div>
@@ -320,6 +408,14 @@ function App() {
           </p>
         </div>
       </footer>
+
+      {/* Query Display Modal */}
+      {showQueries && (
+        <QueryDisplay
+          queries={generatedQueries}
+          onClose={() => setShowQueries(false)}
+        />
+      )}
     </div>
   );
 }
