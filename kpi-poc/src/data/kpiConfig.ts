@@ -245,6 +245,28 @@ export const kpiConfigs: KPIConfig[] = [
     locksWhenEdited: [],
     description: 'Dollar value of recommended order',
   },
+
+  // ============= CUSTOM HANDLER KPIs (Complex Non-Linear Calculations) =============
+
+  {
+    name: 'Smart Reorder Point',
+    displayName: 'Smart Reorder Point',
+    isEditable: false,
+    // No formula - uses custom handler with statistical analysis
+    dependsOn: ['Sls U'],
+    locksWhenEdited: [],
+    description: 'Statistical reorder point with lead time, variance, and seasonality (Custom Handler)',
+  },
+
+  {
+    name: 'Promo Lift %',
+    displayName: 'Promo Lift %',
+    isEditable: false,
+    // No formula - uses custom handler for comparative analysis
+    dependsOn: ['Sls U', 'DR%'],
+    locksWhenEdited: [],
+    description: 'Sales lift during promotional periods vs baseline (Custom Handler)',
+  },
 ];
 
 /**

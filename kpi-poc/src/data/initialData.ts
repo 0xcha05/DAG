@@ -59,6 +59,10 @@ function generateWeekValues(weekNum: number): Record<KPIName, number> {
   const eopUnits = bopUnits - baseSlsU + totalRcptU + returnInv;
   const eopDollars = bopDollars - cogs + totalRcptDollars + returnInv * auc;
 
+  // Custom KPI calculations (will be overridden by custom handlers)
+  const smartReorderPoint = Math.round(baseSlsU * 2.5); // Placeholder initial value
+  const promoLift = drPercent > 0.15 ? 0.25 : 0; // 25% lift if promo week
+
   return {
     'Sls U': baseSlsU,
     'Sls $': slsDollars,
@@ -83,6 +87,9 @@ function generateWeekValues(weekNum: number): Record<KPIName, number> {
     'FWOS': bopUnits / baseSlsU, // Simple FWOS calculation
     'Rec Rcpt U': 0,
     'Rec Rcpt $': 0,
+    'Smart Reorder Point': smartReorderPoint,
+    'Dynamic MD Price': 0,
+    'Promo Lift %': promoLift,
   };
 }
 

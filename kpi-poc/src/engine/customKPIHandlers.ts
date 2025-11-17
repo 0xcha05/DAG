@@ -12,6 +12,23 @@ export type CustomKPIHandler = (
 ) => number;
 
 /**
+ * Metadata about custom KPI execution
+ * Stores inputs, outputs, and intermediate calculations for audit trail
+ */
+export interface CustomKPIExecutionLog {
+  kpiName: KPIName;
+  week: number;
+  productId: string;
+  inputs: Record<string, number>;
+  intermediateSteps: Array<{ step: string; value: number | string }>;
+  output: number;
+  timestamp: Date;
+}
+
+// Store execution logs for custom KPIs
+const executionLogs: CustomKPIExecutionLog[] = [];
+
+/**
  * Registry of custom KPI handlers
  * Maps KPI name to custom calculation function
  */
@@ -91,46 +108,77 @@ export const customKPIHandlers: Record<string, CustomKPIHandler> = {
     const weekData = productData.weeks.get(week);
     if (!weekData) return 0;
 
+    // Track execution log
+    const log: CustomKPIExecutionLog = {
+      kpiName: 'Smart Reorder Point',
+      week,
+      productId: productData.productId,
+      inputs: {},
+      intermediateSteps: [],
+      output: 0,
+      timestamp: new Date(),
+    };
+
     // Step 1: Calculate average demand over lookback period
     const salesHistory: number[] = [];
     for (let i = 0; i < LOOKBACK_WEEKS; i++) {
       const historicalWeek = productData.weeks.get(week - i);
       if (historicalWeek) {
-        salesHistory.push(historicalWeek.values['Sls U']);
+        const slsU = historicalWeek.values['Sls U'];
+        salesHistory.push(slsU);
+        log.inputs[`Week ${week - i} Sls U`] = slsU;
       }
     }
 
     if (salesHistory.length === 0) return 0;
 
     const avgDemand = salesHistory.reduce((sum, s) => sum + s, 0) / salesHistory.length;
+    log.intermediateSteps.push({ step: 'Average Demand (4-week)', value: avgDemand });
 
     // Step 2: Calculate standard deviation of demand
     const variance =
       salesHistory.reduce((sum, s) => sum + Math.pow(s - avgDemand, 2), 0) /
       salesHistory.length;
     const stdDev = Math.sqrt(variance);
+    log.intermediateSteps.push({ step: 'Standard Deviation', value: stdDev });
+    log.intermediateSteps.push({ step: 'Variance', value: variance });
 
     // Step 3: Calculate demand during lead time
     const leadTimeDemand = avgDemand * LEAD_TIME_WEEKS;
+    log.intermediateSteps.push({ step: `Lead Time Demand (${LEAD_TIME_WEEKS} weeks)`, value: leadTimeDemand });
 
     // Step 4: Calculate safety stock
     // Formula: Z * σ * √(Lead Time)
     const safetyStock = SERVICE_LEVEL_Z * stdDev * Math.sqrt(LEAD_TIME_WEEKS);
+    log.intermediateSteps.push({ step: 'Safety Stock (95% service level)', value: safetyStock });
 
     // Step 5: Check for seasonality (compare to same week in history)
     let seasonalFactor = 1.0;
     const sameWeekLastCycle = productData.weeks.get(week - 8); // 8 weeks back
     if (sameWeekLastCycle && avgDemand > 0) {
       const lastCycleSales = sameWeekLastCycle.values['Sls U'];
+      log.inputs[`Week ${week - 8} Sls U (seasonal)`] = lastCycleSales;
       seasonalFactor = lastCycleSales / avgDemand;
       // Cap seasonal adjustment between 0.8 and 1.5
+      const uncappedFactor = seasonalFactor;
       seasonalFactor = Math.max(0.8, Math.min(1.5, seasonalFactor));
+      log.intermediateSteps.push({ step: 'Seasonal Factor (uncapped)', value: uncappedFactor });
+      log.intermediateSteps.push({ step: 'Seasonal Factor (capped 0.8-1.5)', value: seasonalFactor });
+    } else {
+      log.intermediateSteps.push({ step: 'Seasonal Factor (no data)', value: 1.0 });
     }
 
     // Step 6: Calculate reorder point
     const reorderPoint = leadTimeDemand * seasonalFactor + safetyStock;
+    log.intermediateSteps.push({ step: 'Reorder Point (before rounding)', value: reorderPoint });
 
-    return Math.round(reorderPoint);
+    const finalValue = Math.round(reorderPoint);
+    log.output = finalValue;
+
+    // Store execution log
+    executionLogs.push(log);
+
+    return finalValue;
   },
 
   /**
@@ -147,35 +195,77 @@ export const customKPIHandlers: Record<string, CustomKPIHandler> = {
     const weekData = productData.weeks.get(week);
     if (!weekData) return 0;
 
+    // Track execution log
+    const log: CustomKPIExecutionLog = {
+      kpiName: 'Promo Lift %',
+      week,
+      productId: productData.productId,
+      inputs: {},
+      intermediateSteps: [],
+      output: 0,
+      timestamp: new Date(),
+    };
+
     const currentSales = weekData.values['Sls U'];
     const currentDR = weekData.values['DR%'];
 
+    log.inputs['Current Week Sls U'] = currentSales;
+    log.inputs['Current Week DR%'] = currentDR;
+    log.intermediateSteps.push({ step: 'Promo Threshold DR%', value: PROMO_THRESHOLD_DR });
+
     // If not a promo week, return 0
-    if (currentDR <= PROMO_THRESHOLD_DR) return 0;
+    if (currentDR <= PROMO_THRESHOLD_DR) {
+      log.intermediateSteps.push({ step: 'Is Promo Week?', value: 'No (DR% <= 15%)' });
+      log.output = 0;
+      executionLogs.push(log);
+      return 0;
+    }
+
+    log.intermediateSteps.push({ step: 'Is Promo Week?', value: 'Yes (DR% > 15%)' });
 
     // Calculate baseline from non-promo weeks
     const baselineSales: number[] = [];
+    let weekIndex = 0;
     for (let i = 1; i <= BASELINE_WEEKS + 2; i++) {
       const historicalWeek = productData.weeks.get(week - i);
       if (historicalWeek) {
         const dr = historicalWeek.values['DR%'];
+        const slsU = historicalWeek.values['Sls U'];
         // Only include non-promo weeks
         if (dr <= PROMO_THRESHOLD_DR) {
-          baselineSales.push(historicalWeek.values['Sls U']);
+          baselineSales.push(slsU);
+          log.inputs[`Baseline Week ${week - i} Sls U`] = slsU;
+          log.inputs[`Baseline Week ${week - i} DR%`] = dr;
+          weekIndex++;
           if (baselineSales.length >= BASELINE_WEEKS) break;
         }
       }
     }
 
-    if (baselineSales.length === 0) return 0;
+    if (baselineSales.length === 0) {
+      log.intermediateSteps.push({ step: 'Baseline Weeks Found', value: 0 });
+      log.output = 0;
+      executionLogs.push(log);
+      return 0;
+    }
+
+    log.intermediateSteps.push({ step: 'Baseline Weeks Found', value: baselineSales.length });
 
     const avgBaseline = baselineSales.reduce((sum, s) => sum + s, 0) / baselineSales.length;
+    log.intermediateSteps.push({ step: 'Average Baseline Sales', value: avgBaseline });
 
-    if (avgBaseline === 0) return 0;
+    if (avgBaseline === 0) {
+      log.output = 0;
+      executionLogs.push(log);
+      return 0;
+    }
 
     // Calculate lift percentage
     const lift = ((currentSales - avgBaseline) / avgBaseline) * 100;
+    log.intermediateSteps.push({ step: 'Lift % Calculation', value: `((${currentSales} - ${avgBaseline}) / ${avgBaseline}) * 100` });
+    log.output = lift;
 
+    executionLogs.push(log);
     return lift;
   },
 
@@ -408,4 +498,56 @@ WHERE product_id = '${productId}' AND week = ${week}`,
       ],
     }
   );
+}
+
+/**
+ * Get execution logs for custom KPIs
+ * Returns logs with inputs, intermediate steps, and outputs
+ */
+export function getCustomKPIExecutionLogs(): CustomKPIExecutionLog[] {
+  return [...executionLogs];
+}
+
+/**
+ * Get execution logs for a specific KPI
+ */
+export function getCustomKPIExecutionLogsByKPI(kpiName: KPIName): CustomKPIExecutionLog[] {
+  return executionLogs.filter(log => log.kpiName === kpiName);
+}
+
+/**
+ * Get the most recent execution log for a KPI
+ */
+export function getLatestExecutionLog(kpiName: KPIName): CustomKPIExecutionLog | undefined {
+  const logs = executionLogs.filter(log => log.kpiName === kpiName);
+  return logs.length > 0 ? logs[logs.length - 1] : undefined;
+}
+
+/**
+ * Clear execution logs
+ */
+export function clearCustomKPIExecutionLogs(): void {
+  executionLogs.length = 0;
+}
+
+/**
+ * Format execution log for display
+ */
+export function formatExecutionLog(log: CustomKPIExecutionLog): string {
+  let formatted = `\n=== Custom KPI Execution Log ===\n`;
+  formatted += `KPI: ${log.kpiName}\n`;
+  formatted += `Product: ${log.productId}\n`;
+  formatted += `Week: ${log.week}\n`;
+  formatted += `Timestamp: ${log.timestamp.toISOString()}\n`;
+  formatted += `\nInputs:\n`;
+  Object.entries(log.inputs).forEach(([key, value]) => {
+    formatted += `  ${key}: ${value}\n`;
+  });
+  formatted += `\nIntermediate Steps:\n`;
+  log.intermediateSteps.forEach((step, i) => {
+    formatted += `  ${i + 1}. ${step.step}: ${step.value}\n`;
+  });
+  formatted += `\nOutput: ${log.output}\n`;
+  formatted += `===================================\n`;
+  return formatted;
 }

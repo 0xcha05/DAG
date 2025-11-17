@@ -4,7 +4,7 @@
  */
 
 import type { KPIName, LogEntry, RebalancingResult } from '../types';
-import { hasCustomHandler, getCustomHandlerSQL } from '../engine/customKPIHandlers';
+import { hasCustomHandler, getCustomHandlerSQL, getLatestExecutionLog } from '../engine/customKPIHandlers';
 
 /**
  * Generated SQL query with parameters
@@ -213,6 +213,7 @@ function generateLogSystemRecalcQuery(
 
 /**
  * Generate additional SQL explanation for custom KPI handlers
+ * Includes inputs, intermediate steps, and output from execution log
  */
 function generateCustomHandlerExplanation(
   kpiName: KPIName,
@@ -224,6 +225,28 @@ function generateCustomHandlerExplanation(
   }
 
   const sqlInfo = getCustomHandlerSQL(kpiName, productId, week);
+  const executionLog = getLatestExecutionLog(kpiName);
+
+  let inputsSection = '';
+  let intermediateSection = '';
+  let outputSection = '';
+
+  if (executionLog) {
+    // Add inputs
+    inputsSection = '\n-- INPUTS (from execution):\n';
+    Object.entries(executionLog.inputs).forEach(([key, value]) => {
+      inputsSection += `--   ${key} = ${value}\n`;
+    });
+
+    // Add intermediate steps
+    intermediateSection = '\n-- INTERMEDIATE CALCULATIONS:\n';
+    executionLog.intermediateSteps.forEach((step, i) => {
+      intermediateSection += `--   ${i + 1}. ${step.step} = ${step.value}\n`;
+    });
+
+    // Add output
+    outputSection = `\n-- OUTPUT: ${executionLog.output}\n`;
+  }
 
   return {
     sql: `-- CUSTOM HANDLER EXPLANATION: ${kpiName}
@@ -231,7 +254,7 @@ function generateCustomHandlerExplanation(
 -- ${sqlInfo.description}
 --
 -- Implementation requires ${sqlInfo.requiresMultiQuery ? 'MULTIPLE QUERIES' : 'COMPLEX LOGIC'}:
-${sqlInfo.steps.map((step, i) => `-- Step ${i + 1}: ${step}`).join('\n')}
+${sqlInfo.steps.map((step, i) => `-- Step ${i + 1}: ${step}`).join('\n')}${inputsSection}${intermediateSection}${outputSection}
 --
 -- The final UPDATE query (below) sets the calculated value,
 -- but the actual calculation logic is implemented in application code.`,
