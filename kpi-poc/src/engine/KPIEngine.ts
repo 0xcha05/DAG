@@ -1,6 +1,7 @@
 import type { KPIConfig, KPIName, WeekData, RebalancingResult, ProductData, LogEntry } from '../types';
 import { topologicalSort } from './topologicalSort';
 import { evaluateFormula } from './formulas';
+import { hasCustomHandler, executeCustomHandler } from './customKPIHandlers';
 
 export class KPIRebalancingEngine {
   private configs: Map<KPIName, KPIConfig>;
@@ -98,12 +99,19 @@ export class KPIRebalancingEngine {
 
       for (const kpi of level) {
         const config = this.configs.get(kpi);
-        if (!config || !config.formula) {
+        if (!config || (!config.formula && !hasCustomHandler(kpi))) {
           continue;
         }
 
         const oldKPIValue = currentValues[kpi];
-        const newKPIValue = evaluateFormula(config.formula, currentValues);
+
+        // Check if this KPI has a custom handler (for non-linear calculations)
+        let newKPIValue: number;
+        if (hasCustomHandler(kpi)) {
+          newKPIValue = executeCustomHandler(kpi, productData, weekNumber, currentValues);
+        } else {
+          newKPIValue = evaluateFormula(config.formula!, currentValues);
+        }
 
         currentValues[kpi] = newKPIValue;
         affectedKPIs.add(kpi);
@@ -127,7 +135,7 @@ export class KPIRebalancingEngine {
             week: weekNumber,
             triggeredBy: editedKPI,
             calculationLevel: levelIndex + 1,
-            formula: config.formula,
+            formula: hasCustomHandler(kpi) ? `[Custom Handler: ${kpi}]` : config.formula,
           });
         }
       }

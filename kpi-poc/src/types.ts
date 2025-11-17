@@ -23,7 +23,10 @@ export type KPIName =
   | 'Return Inv'   // Return Inventory
   | 'FWOS'         // Forward Weeks of Supply
   | 'Rec Rcpt U'   // Recommended Receipts Units
-  | 'Rec Rcpt $';  // Recommended Receipts $
+  | 'Rec Rcpt $'   // Recommended Receipts $
+  | 'Smart Reorder Point'  // Smart Reorder Point (Custom Handler)
+  | 'Dynamic MD Price'     // Dynamic Markdown Price (Custom Handler)
+  | 'Promo Lift %';        // Promotional Lift % (Custom Handler)
 
 export interface KPIValue {
   [key: string]: number;

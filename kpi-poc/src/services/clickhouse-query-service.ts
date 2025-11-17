@@ -4,6 +4,7 @@
  */
 
 import type { KPIName, LogEntry, RebalancingResult } from '../types';
+import { hasCustomHandler, getCustomHandlerSQL } from '../engine/customKPIHandlers';
 
 /**
  * Generated SQL query with parameters
@@ -41,6 +42,9 @@ const KPI_COLUMN_MAP: Record<string, string> = {
   'FWOS': 'fwos',
   'Rec Rcpt U': 'rec_rcpt_u',
   'Rec Rcpt $': 'rec_rcpt_dollars',
+  'Smart Reorder Point': 'smart_reorder_point',
+  'Dynamic MD Price': 'dynamic_md_price',
+  'Promo Lift %': 'promo_lift_percent',
 };
 
 /**
@@ -74,6 +78,14 @@ export function generateRebalancingQueries(
   systemLogs.forEach(log => {
     // Log system recalc
     queries.push(generateLogSystemRecalcQuery(log, productId, year));
+
+    // If this is a custom handler, add explanation before the update
+    if (hasCustomHandler(log.kpi)) {
+      const explanation = generateCustomHandlerExplanation(log.kpi, productId, log.week);
+      if (explanation) {
+        queries.push(explanation);
+      }
+    }
 
     // Update KPI value
     queries.push(generateUpdateSingleKPIQuery(productId, log.week, log.kpi, log.newValue));
@@ -159,6 +171,12 @@ function generateLogSystemRecalcQuery(
   productId: string,
   year: number
 ): GeneratedQuery {
+  // Check if this is a custom handler
+  const isCustom = entry.formula?.startsWith('[Custom Handler:');
+  const formulaDisplay = isCustom
+    ? entry.formula
+    : entry.formula || '';
+
   return {
     sql: `INSERT INTO kpi_audit_log (
   id, timestamp, log_type, product_id, week, year,
@@ -187,9 +205,42 @@ function generateLogSystemRecalcQuery(
       newValue: parseFloat(entry.newValue.toFixed(4)),
       triggeredBy: entry.triggeredBy || '',
       calculationLevel: entry.calculationLevel || 0,
-      formula: entry.formula || '',
+      formula: formulaDisplay,
     },
-    description: `Log system recalc: ${entry.kpi} (Level ${entry.calculationLevel}, triggered by ${entry.triggeredBy})`,
+    description: `Log system recalc: ${entry.kpi} (Level ${entry.calculationLevel}, triggered by ${entry.triggeredBy})${isCustom ? ' [CUSTOM HANDLER]' : ''}`,
+  };
+}
+
+/**
+ * Generate additional SQL explanation for custom KPI handlers
+ */
+function generateCustomHandlerExplanation(
+  kpiName: KPIName,
+  productId: string,
+  week: number
+): GeneratedQuery | null {
+  if (!hasCustomHandler(kpiName)) {
+    return null;
+  }
+
+  const sqlInfo = getCustomHandlerSQL(kpiName, productId, week);
+
+  return {
+    sql: `-- CUSTOM HANDLER EXPLANATION: ${kpiName}
+-- This KPI cannot be calculated with a simple formula
+-- ${sqlInfo.description}
+--
+-- Implementation requires ${sqlInfo.requiresMultiQuery ? 'MULTIPLE QUERIES' : 'COMPLEX LOGIC'}:
+${sqlInfo.steps.map((step, i) => `-- Step ${i + 1}: ${step}`).join('\n')}
+--
+-- The final UPDATE query (below) sets the calculated value,
+-- but the actual calculation logic is implemented in application code.`,
+    params: {
+      productId,
+      week,
+      kpiName,
+    },
+    description: `Custom Handler Explanation: ${kpiName}`,
   };
 }
 
