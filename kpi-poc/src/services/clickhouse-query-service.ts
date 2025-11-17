@@ -4,7 +4,16 @@
  */
 
 import type { KPIName, LogEntry, RebalancingResult } from '../types';
-import { hasCustomHandler, getCustomHandlerSQL, getLatestExecutionLog } from '../engine/customKPIHandlers';
+import {
+  hasCustomHandler,
+  getCustomHandlerSQL,
+  getLatestExecutionLog,
+} from '../engine/customKPIHandlers';
+import {
+  getProductionSQL,
+  hasProductionSQL,
+  formatProductionSQL,
+} from '../engine/customKPIProductionSQL';
 
 /**
  * Generated SQL query with parameters
@@ -79,16 +88,46 @@ export function generateRebalancingQueries(
     // Log system recalc
     queries.push(generateLogSystemRecalcQuery(log, productId, year));
 
-    // If this is a custom handler, add explanation before the update
+    // If this is a custom handler, generate production SQL or POC explanation
     if (hasCustomHandler(log.kpi)) {
-      const explanation = generateCustomHandlerExplanation(log.kpi, productId, log.week);
-      if (explanation) {
-        queries.push(explanation);
-      }
-    }
+      // Check if production SQL is available (for 95 GB datasets)
+      if (hasProductionSQL(log.kpi)) {
+        // PRODUCTION MODE: Generate executable ClickHouse SQL
+        const productionSQL = getProductionSQL(log.kpi, productId, log.week, year);
+        if (productionSQL) {
+          // Add production SQL with explanation
+          queries.push({
+            sql: `-- PRODUCTION SQL: ${productionSQL.kpiName}
+-- ${productionSQL.description}
+-- Designed for 95 GB+ datasets - executes entirely in ClickHouse
+--
+-- Explanation:
+${productionSQL.explanation.map((step, i) => `-- ${i + 1}. ${step}`).join('\n')}
+--
+${formatProductionSQL(productionSQL)}`,
+            params: {
+              productId,
+              week: log.week,
+              year,
+              kpiName: log.kpi,
+            },
+            description: `[PRODUCTION] ${log.kpi} calculation (executable SQL)`,
+          });
+        }
+      } else {
+        // POC MODE: Generate explanation with JavaScript execution logs
+        const explanation = generateCustomHandlerExplanation(log.kpi, productId, log.week, year);
+        if (explanation) {
+          queries.push(explanation);
+        }
 
-    // Update KPI value
-    queries.push(generateUpdateSingleKPIQuery(productId, log.week, log.kpi, log.newValue));
+        // Add simple UPDATE query (value comes from JavaScript execution)
+        queries.push(generateUpdateSingleKPIQuery(productId, log.week, log.kpi, log.newValue));
+      }
+    } else {
+      // Formula-based KPI: simple UPDATE
+      queries.push(generateUpdateSingleKPIQuery(productId, log.week, log.kpi, log.newValue));
+    }
   });
 
   return queries;
@@ -212,13 +251,15 @@ function generateLogSystemRecalcQuery(
 }
 
 /**
- * Generate additional SQL explanation for custom KPI handlers
+ * Generate additional SQL explanation for custom KPI handlers (POC MODE)
  * Includes inputs, intermediate steps, and output from execution log
+ * Used when production SQL is not available
  */
 function generateCustomHandlerExplanation(
   kpiName: KPIName,
   productId: string,
-  week: number
+  week: number,
+  year: number = 2024
 ): GeneratedQuery | null {
   if (!hasCustomHandler(kpiName)) {
     return null;
