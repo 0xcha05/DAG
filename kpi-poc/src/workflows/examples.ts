@@ -1,291 +1,176 @@
 /**
- * Workflow Generation Examples
+ * Workflow Generation Examples (Version 2)
  *
- * Demonstrates config-driven allocation across time and hierarchies
+ * Demonstrates KPI-specific allocation strategies.
+ * The allocation strategy comes from the KPI config, not from the workflow context.
  */
 
-import type { WorkflowContext, AllocationConfig } from './types';
+import type { WorkflowContext, AggregationContext } from './types';
 import {
   generateAggregatedEditWorkflow,
   generateSingleProductEditWorkflow,
 } from './workflowGenerator';
 
 /**
- * Example 1: Department-level edit for entire year
- * Distribution: Pro-rata across products and weeks
+ * Example 1: Department-level Sls U edit (year aggregation)
  *
- * Scenario:
- * - User edits: "Electronics Department, 2024, Sls U = 500,000"
- * - Current aggregate: 480,000
- * - Delta: +20,000
- * - Strategy: Distribute proportionally to current product-week values
+ * Sls U config has:
+ * - default: pro_rata
+ * - time.year: historical (lookback 2 years)
+ *
+ * Since this is a year-level edit, it will use the historical strategy.
  */
-export function example1_departmentYearProRata() {
-  const allocationConfig: AllocationConfig = {
-    strategy: 'pro_rata',
-
-    aggregation: {
-      // Edit at department + year level
-      time: {
-        editLevel: 'year',
-        storageLevel: 'week',
-        mapping: {
-          sqlExpression: 'year', // Group weeks by year
-        },
-      },
-      hierarchy: {
-        editLevel: ['dept'], // Editing at department level
-        storageLevel: ['product_id', 'hierarchy_code', 'dept', 'channel'], // Storage granularity
-      },
-      where: "dept = 'Electronics' AND year = 2024",
+export function example1_slsU_yearLevel() {
+  const aggregationContext: AggregationContext = {
+    time: {
+      level: 'year',
+      sqlExpression: 'year',
     },
-
-    distribution: {
-      granularity: ['product_id', 'week', 'year'], // Distribute to product-week level
+    hierarchy: {
+      level: 'dept',
+      levels: ['dept'],
     },
+    where: "dept = 'Electronics' AND year = 2024",
+    granularity: ['product_id', 'week', 'year'],
   };
 
   const context: WorkflowContext = {
     editedKPI: 'Sls U',
     editedValue: 500000,
-    allocationConfig,
+    aggregationContext,
   };
 
   return generateAggregatedEditWorkflow(context);
 }
 
 /**
- * Example 2: Month-level edit with equal distribution
- * Distribution: Equal allocation across products for all weeks in January
+ * Example 2: Department-level Sls U edit (month aggregation)
  *
- * Scenario:
- * - User edits: "Apparel Department, January 2024, Sls U = 50,000"
- * - Strategy: Distribute equally across all product-weeks in January
+ * Sls U config has:
+ * - default: pro_rata
+ * - time.year: historical
+ *
+ * Since this is a month-level edit (not year), it will use the default: pro_rata.
  */
-export function example2_monthEqualDistribution() {
-  const allocationConfig: AllocationConfig = {
-    strategy: 'equal',
-
-    aggregation: {
-      // Edit at month level
-      time: {
-        editLevel: 'month',
-        storageLevel: 'week',
-        mapping: {
-          // Map weeks to their month
-          sqlExpression: 'toMonth(toDate(year, 1, 1) + toIntervalWeek(week))',
-        },
-      },
-      hierarchy: {
-        editLevel: ['dept'],
-        storageLevel: ['product_id', 'hierarchy_code', 'dept', 'channel'],
-      },
-      where: "dept = 'Apparel' AND toMonth(toDate(year, 1, 1) + toIntervalWeek(week)) = 1 AND year = 2024",
+export function example2_slsU_monthLevel() {
+  const aggregationContext: AggregationContext = {
+    time: {
+      level: 'month',
+      sqlExpression: 'toMonth(toDate(year, 1, 1) + toIntervalWeek(week))',
     },
-
-    distribution: {
-      granularity: ['product_id', 'week', 'year'],
+    hierarchy: {
+      level: 'dept',
+      levels: ['dept'],
     },
+    where: "dept = 'Electronics' AND toMonth(toDate(year, 1, 1) + toIntervalWeek(week)) = 1 AND year = 2024",
+    granularity: ['product_id', 'week', 'year'],
   };
 
   const context: WorkflowContext = {
     editedKPI: 'Sls U',
     editedValue: 50000,
-    allocationConfig,
+    aggregationContext,
   };
 
   return generateAggregatedEditWorkflow(context);
 }
 
 /**
- * Example 3: Quarter-level edit with historical patterns
- * Distribution: Based on historical sales patterns from previous 2 years
+ * Example 3: BOP U edit at department level
  *
- * Scenario:
- * - User edits: "Electronics, Q1 2024, Sls U = 120,000"
- * - Strategy: Use historical Q1 patterns (2022, 2023) to distribute
+ * BOP U config has:
+ * - default: equal
+ * - hierarchy.dept: pro_rata
+ *
+ * Since this is a dept-level edit, it will use pro_rata.
  */
-export function example3_quarterHistoricalPatterns() {
-  const allocationConfig: AllocationConfig = {
-    strategy: 'historical',
-
-    aggregation: {
-      time: {
-        editLevel: 'quarter',
-        storageLevel: 'week',
-        mapping: {
-          sqlExpression: 'toQuarter(toDate(year, 1, 1) + toIntervalWeek(week))',
-        },
-      },
-      hierarchy: {
-        editLevel: ['dept'],
-        storageLevel: ['product_id', 'hierarchy_code', 'dept', 'channel'],
-      },
-      where: "dept = 'Electronics' AND toQuarter(toDate(year, 1, 1) + toIntervalWeek(week)) = 1 AND year = 2024",
+export function example3_bopU_deptLevel() {
+  const aggregationContext: AggregationContext = {
+    hierarchy: {
+      level: 'dept',
+      levels: ['dept'],
     },
-
-    distribution: {
-      granularity: ['product_id', 'week', 'year'],
-    },
-
-    historical: {
-      lookbackYears: 2, // Use 2022, 2023 data
-      sameTimePeriod: true, // Match Q1 only
-    },
+    where: "dept = 'Electronics' AND year = 2024",
+    granularity: ['product_id', 'week', 'year'],
   };
 
   const context: WorkflowContext = {
-    editedKPI: 'Sls U',
-    editedValue: 120000,
-    allocationConfig,
+    editedKPI: 'BOP U',
+    editedValue: 100000,
+    aggregationContext,
   };
 
   return generateAggregatedEditWorkflow(context);
 }
 
 /**
- * Example 4: Multi-level hierarchy with weighted distribution
- * Distribution: Priority-based weights (A-tier products get 3x, B-tier 2x, C-tier 1x)
+ * Example 4: DR% (discount rate) edit at month level
  *
- * Scenario:
- * - User edits: "Electronics, Online Channel, 2024, Sls U = 300,000"
- * - Strategy: Distribute based on product tier priorities
+ * DR% config has:
+ * - default: equal
+ *
+ * Will distribute evenly across all product-weeks.
  */
-export function example4_hierarchyWeightedDistribution() {
-  const allocationConfig: AllocationConfig = {
-    strategy: 'weighted',
-
-    aggregation: {
-      time: {
-        editLevel: 'year',
-        storageLevel: 'week',
-        mapping: {
-          sqlExpression: 'year',
-        },
-      },
-      hierarchy: {
-        editLevel: ['dept', 'channel'], // Edit at dept + channel level
-        storageLevel: ['product_id', 'hierarchy_code', 'dept', 'channel'],
-      },
-      where: "dept = 'Electronics' AND channel = 'Online' AND year = 2024",
+export function example4_drPercent_monthLevel() {
+  const aggregationContext: AggregationContext = {
+    time: {
+      level: 'month',
+      sqlExpression: 'toMonth(toDate(year, 1, 1) + toIntervalWeek(week))',
     },
-
-    distribution: {
-      granularity: ['product_id', 'week', 'year'],
+    hierarchy: {
+      level: 'dept',
+      levels: ['dept'],
     },
-
-    weights: {
-      column: 'product_tier', // Fictional tier column
-      mapping: {
-        A: 3.0, // A-tier gets 3x weight
-        B: 2.0, // B-tier gets 2x weight
-        C: 1.0, // C-tier gets 1x weight
-      },
-    },
+    where: "dept = 'Electronics' AND toMonth(toDate(year, 1, 1) + toIntervalWeek(week)) = 1 AND year = 2024",
+    granularity: ['product_id', 'week', 'year'],
   };
 
   const context: WorkflowContext = {
-    editedKPI: 'Sls U',
-    editedValue: 300000,
-    allocationConfig,
+    editedKPI: 'DR%',
+    editedValue: 0.15,  // 15% discount
+    aggregationContext,
   };
 
   return generateAggregatedEditWorkflow(context);
 }
 
 /**
- * Example 5: Custom allocation logic
- * Distribution: User-provided SQL for complex business rules
+ * Example 5: AUC (cost) edit at year level
  *
- * Scenario:
- * - User edits: "Home Department, 2024, Sls U = 200,000"
- * - Strategy: Custom SQL that combines historical + seasonal factors
+ * AUC config has:
+ * - default: historical (lookback 1 year)
+ *
+ * Will use historical cost patterns from previous year.
  */
-export function example5_customAllocationLogic() {
-  const allocationConfig: AllocationConfig = {
-    strategy: 'custom',
-
-    aggregation: {
-      time: {
-        editLevel: 'year',
-        storageLevel: 'week',
-        mapping: {
-          sqlExpression: 'year',
-        },
-      },
-      hierarchy: {
-        editLevel: ['dept'],
-        storageLevel: ['product_id', 'hierarchy_code', 'dept', 'channel'],
-      },
-      where: "dept = 'Home' AND year = 2024",
+export function example5_auc_yearLevel() {
+  const aggregationContext: AggregationContext = {
+    time: {
+      level: 'year',
+      sqlExpression: 'year',
     },
-
-    distribution: {
-      granularity: ['product_id', 'week', 'year'],
+    hierarchy: {
+      level: 'dept',
+      levels: ['dept'],
     },
-
-    customWeightSQL: `
--- Custom logic: Blend historical patterns with seasonal factors
-WITH historical AS (
-  SELECT
-    product_id,
-    week,
-    AVG(sls_u) as avg_historical_sls
-  FROM kpi_data
-  WHERE dept = 'Home'
-    AND year IN (2022, 2023)
-  GROUP BY product_id, week
-),
-seasonal_factors AS (
-  SELECT
-    week,
-    CASE
-      WHEN week BETWEEN 1 AND 13 THEN 0.8   -- Q1: Lower
-      WHEN week BETWEEN 14 AND 26 THEN 1.0  -- Q2: Normal
-      WHEN week BETWEEN 27 AND 39 THEN 1.2  -- Q3: Higher
-      ELSE 1.5                               -- Q4: Peak (holidays)
-    END as seasonal_factor
-  FROM (SELECT DISTINCT week FROM kpi_data WHERE year = 2024)
-),
-weighted_values AS (
-  SELECT
-    h.product_id,
-    h.week,
-    h.avg_historical_sls * s.seasonal_factor as weighted_value
-  FROM historical h
-  JOIN seasonal_factors s ON h.week = s.week
-),
-totals AS (
-  SELECT SUM(weighted_value) as total_weight
-  FROM weighted_values
-)
-SELECT
-  w.product_id,
-  w.week,
-  2024 as year,
-  w.weighted_value / t.total_weight as weight
-FROM weighted_values w
-CROSS JOIN totals t
-`,
+    where: "dept = 'Electronics' AND year = 2024",
+    granularity: ['product_id', 'week', 'year'],
   };
 
   const context: WorkflowContext = {
-    editedKPI: 'Sls U',
-    editedValue: 200000,
-    allocationConfig,
+    editedKPI: 'AUC',
+    editedValue: 8.50,  // Average unit cost
+    aggregationContext,
   };
 
   return generateAggregatedEditWorkflow(context);
 }
 
 /**
- * Example 6: Single-product edit (no allocation needed)
+ * Example 6: Single-product edit (no allocation)
  *
- * Scenario:
- * - User edits: "Product P001, Week 14, 2024, Sls U = 150"
- * - No distribution needed - direct update + rebalance
+ * Direct edit at granular level - no distribution needed.
  */
-export function example6_singleProductEdit() {
+export function example6_singleProduct() {
   const context: WorkflowContext = {
     editedKPI: 'Sls U',
     editedValue: 150,
@@ -298,42 +183,28 @@ export function example6_singleProductEdit() {
 }
 
 /**
- * Example 7: Complex multi-hierarchy allocation
- * Distribution: Department → Sub-department → Category → Product
+ * Example 7: Multi-hierarchy edit (subdept level)
  *
- * Scenario:
- * - User edits: "Electronics, Televisions Sub-dept, Q2 2024, Sls U = 80,000"
- * - Strategy: Pro-rata across all TV products for Q2 weeks
+ * Editing at sub-department level (more specific than department).
  */
-export function example7_multiHierarchyProRata() {
-  const allocationConfig: AllocationConfig = {
-    strategy: 'pro_rata',
-
-    aggregation: {
-      time: {
-        editLevel: 'quarter',
-        storageLevel: 'week',
-        mapping: {
-          sqlExpression: 'toQuarter(toDate(year, 1, 1) + toIntervalWeek(week))',
-        },
-      },
-      hierarchy: {
-        editLevel: ['dept', 'sub_dept'], // Edit at dept + sub-dept level
-        storageLevel: ['product_id', 'hierarchy_code', 'dept', 'sub_dept', 'category', 'channel'],
-        rollupPath: ['product_id', 'category', 'sub_dept', 'dept'], // Hierarchy rollup path
-      },
-      where: "dept = 'Electronics' AND sub_dept = 'Televisions' AND toQuarter(toDate(year, 1, 1) + toIntervalWeek(week)) = 2 AND year = 2024",
+export function example7_slsU_subdeptLevel() {
+  const aggregationContext: AggregationContext = {
+    time: {
+      level: 'quarter',
+      sqlExpression: 'toQuarter(toDate(year, 1, 1) + toIntervalWeek(week))',
     },
-
-    distribution: {
-      granularity: ['product_id', 'week', 'year'],
+    hierarchy: {
+      level: 'subdept',
+      levels: ['dept', 'subdept'],
     },
+    where: "dept = 'Electronics' AND subdept = 'Televisions' AND toQuarter(toDate(year, 1, 1) + toIntervalWeek(week)) = 1 AND year = 2024",
+    granularity: ['product_id', 'week', 'year'],
   };
 
   const context: WorkflowContext = {
     editedKPI: 'Sls U',
-    editedValue: 80000,
-    allocationConfig,
+    editedValue: 120000,
+    aggregationContext,
   };
 
   return generateAggregatedEditWorkflow(context);
@@ -344,13 +215,13 @@ export function example7_multiHierarchyProRata() {
  */
 export function printExampleWorkflow(exampleNum: number) {
   const examples = [
-    example1_departmentYearProRata,
-    example2_monthEqualDistribution,
-    example3_quarterHistoricalPatterns,
-    example4_hierarchyWeightedDistribution,
-    example5_customAllocationLogic,
-    example6_singleProductEdit,
-    example7_multiHierarchyProRata,
+    example1_slsU_yearLevel,
+    example2_slsU_monthLevel,
+    example3_bopU_deptLevel,
+    example4_drPercent_monthLevel,
+    example5_auc_yearLevel,
+    example6_singleProduct,
+    example7_slsU_subdeptLevel,
   ];
 
   if (exampleNum < 1 || exampleNum > examples.length) {
@@ -363,31 +234,63 @@ export function printExampleWorkflow(exampleNum: number) {
 }
 
 /**
- * Dry run: Show what happens with actual numbers
+ * Dry run demonstration: Department + Month edit with pro-rata
  *
- * Example: Electronics Dept, January 2024, Sls U edited to 50,000
+ * Scenario: User edits "Electronics, January 2024, Sls U = 50,000"
  *
- * Current state:
- * - Product P001, Week 1: 100 units (weight: 0.05 = 100/2000)
- * - Product P001, Week 2: 150 units (weight: 0.075 = 150/2000)
- * - Product P002, Week 1: 200 units (weight: 0.10 = 200/2000)
- * - Product P002, Week 2: 250 units (weight: 0.125 = 250/2000)
- * - ... (20 more product-weeks totaling 1300 units)
- * - Total current: 2000 units
+ * Current state (Electronics products, Jan weeks):
+ * - P001, Week 1: 100 units
+ * - P001, Week 2: 150 units
+ * - P002, Week 1: 200 units
+ * - P002, Week 2: 250 units
+ * - ... (more products/weeks)
+ * Total current: 48,000 units
  *
- * After edit to 50,000:
- * - Delta: +48,000
- * - P001, Week 1: 100 + (48000 * 0.05) = 100 + 2400 = 2500
- * - P001, Week 2: 150 + (48000 * 0.075) = 150 + 3600 = 3750
- * - P002, Week 1: 200 + (48000 * 0.10) = 200 + 4800 = 5000
- * - P002, Week 2: 250 + (48000 * 0.125) = 250 + 6000 = 6250
- * - ... (remaining distributed proportionally)
- * - Total after: 50,000 ✓
+ * KPI config for Sls U:
+ * - time.year: historical strategy
+ * - default: pro_rata strategy  ← Will use this for month-level
  *
- * Workflow steps:
- * 1. Calculate current aggregate: 2000
- * 2. Calculate weights: pro_rata based on current values
- * 3. Calculate deltas: (50000 - 2000) * weight for each record
- * 4. Apply edits: Add delta to each product-week
- * 5. Rebalance: GM $, GM%, WOS, etc. (dependent KPIs)
+ * Step 1: Get allocation strategy
+ *   - Check KPI config for Sls U
+ *   - Aggregation level is "month" (not "year")
+ *   - Use default strategy: pro_rata
+ *
+ * Step 2: Calculate current aggregate
+ *   SELECT SUM(sls_u) FROM kpi_data WHERE dept = 'Electronics' AND month = 1
+ *   Result: 48,000
+ *
+ * Step 3: Calculate pro-rata weights
+ *   P001, Week 1: 100 / 48000 = 0.00208 (0.208%)
+ *   P001, Week 2: 150 / 48000 = 0.00312 (0.312%)
+ *   P002, Week 1: 200 / 48000 = 0.00417 (0.417%)
+ *   P002, Week 2: 250 / 48000 = 0.00521 (0.521%)
+ *   ...
+ *
+ * Step 4: Calculate deltas
+ *   Total delta: 50,000 - 48,000 = 2,000
+ *   P001, Week 1: 2000 * 0.00208 = 4.16
+ *   P001, Week 2: 2000 * 0.00312 = 6.24
+ *   P002, Week 1: 2000 * 0.00417 = 8.34
+ *   P002, Week 2: 2000 * 0.00521 = 10.42
+ *   ...
+ *
+ * Step 5: Apply edits
+ *   P001, Week 1: 100 + 4.16 = 104.16 ✓
+ *   P001, Week 2: 150 + 6.24 = 156.24 ✓
+ *   P002, Week 1: 200 + 8.34 = 208.34 ✓
+ *   P002, Week 2: 250 + 10.42 = 260.42 ✓
+ *   ...
+ *   Total: 50,000 ✓
+ *
+ * Step 6: Validate (if enabled)
+ *   SELECT SUM(sls_u) FROM kpi_data WHERE dept = 'Electronics' AND month = 1
+ *   Expected: 50,000
+ *   Actual: 50,000
+ *   Difference: 0 (< tolerance 0.01) ✓
+ *
+ * Step 7+: Rebalance dependent KPIs
+ *   Level 0: GM $, WOS (formulas depend on Sls U)
+ *   Level 1: GM% (formula depends on GM $)
+ *   ...
+ *   All recalculated from formulas - NO distribution for dependent KPIs!
  */

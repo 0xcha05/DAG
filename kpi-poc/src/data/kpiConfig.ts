@@ -17,6 +17,20 @@ export const kpiConfigs: KPIConfig[] = [
     dependsOn: [],
     locksWhenEdited: ['DR%', 'Return %'],
     description: 'Total units sold in the period',
+    allocationStrategy: {
+      default: { strategy: 'pro_rata' },
+      time: {
+        year: {
+          strategy: 'historical',
+          historical: { lookbackYears: 2, sameTimePeriod: true },
+        },
+      },
+    },
+    allocationValidation: {
+      validateSum: true,
+      tolerance: 0.01,
+      onValidationFailure: 'error',
+    },
   },
 
   {
@@ -26,6 +40,20 @@ export const kpiConfigs: KPIConfig[] = [
     dependsOn: [],
     locksWhenEdited: ['Sls U'],
     description: 'Total sales revenue',
+    allocationStrategy: {
+      default: { strategy: 'pro_rata' },
+      time: {
+        year: {
+          strategy: 'historical',
+          historical: { lookbackYears: 2, sameTimePeriod: true },
+        },
+      },
+    },
+    allocationValidation: {
+      validateSum: true,
+      tolerance: 0.01,
+      onValidationFailure: 'error',
+    },
   },
 
   {
@@ -35,6 +63,14 @@ export const kpiConfigs: KPIConfig[] = [
     dependsOn: [],
     locksWhenEdited: ['Sls U'],
     description: 'Percentage discount applied to sales',
+    allocationStrategy: {
+      default: { strategy: 'equal' }, // Percentages typically distributed evenly
+    },
+    allocationValidation: {
+      validateSum: true,
+      tolerance: 0.0001, // Tighter tolerance for percentages
+      onValidationFailure: 'warn',
+    },
   },
 
   {
@@ -44,6 +80,14 @@ export const kpiConfigs: KPIConfig[] = [
     dependsOn: [],
     locksWhenEdited: ['Sls U'],
     description: 'Percentage of units returned',
+    allocationStrategy: {
+      default: { strategy: 'equal' }, // Percentages typically distributed evenly
+    },
+    allocationValidation: {
+      validateSum: true,
+      tolerance: 0.0001,
+      onValidationFailure: 'warn',
+    },
   },
 
   // ============= CALCULATED KPIs (Level 1 - Direct dependencies) =============
@@ -147,6 +191,17 @@ export const kpiConfigs: KPIConfig[] = [
     dependsOn: [],
     locksWhenEdited: [],
     description: 'Inventory at start of period',
+    allocationStrategy: {
+      default: { strategy: 'equal' }, // Inventory typically spread evenly
+      hierarchy: {
+        dept: { strategy: 'pro_rata' }, // At dept level, use current proportions
+      },
+    },
+    allocationValidation: {
+      validateSum: true,
+      tolerance: 0.01,
+      onValidationFailure: 'error',
+    },
   },
 
   {
@@ -156,6 +211,17 @@ export const kpiConfigs: KPIConfig[] = [
     dependsOn: [],
     locksWhenEdited: [],
     description: 'Inventory value at start of period',
+    allocationStrategy: {
+      default: { strategy: 'equal' },
+      hierarchy: {
+        dept: { strategy: 'pro_rata' },
+      },
+    },
+    allocationValidation: {
+      validateSum: true,
+      tolerance: 0.01,
+      onValidationFailure: 'error',
+    },
   },
 
   {
@@ -165,6 +231,14 @@ export const kpiConfigs: KPIConfig[] = [
     dependsOn: [],
     locksWhenEdited: [],
     description: 'Units received in period',
+    allocationStrategy: {
+      default: { strategy: 'pro_rata' },
+    },
+    allocationValidation: {
+      validateSum: true,
+      tolerance: 0.01,
+      onValidationFailure: 'error',
+    },
   },
 
   {
@@ -174,6 +248,14 @@ export const kpiConfigs: KPIConfig[] = [
     dependsOn: [],
     locksWhenEdited: [],
     description: 'Dollar value of receipts',
+    allocationStrategy: {
+      default: { strategy: 'pro_rata' },
+    },
+    allocationValidation: {
+      validateSum: true,
+      tolerance: 0.01,
+      onValidationFailure: 'error',
+    },
   },
 
   {
@@ -214,6 +296,15 @@ export const kpiConfigs: KPIConfig[] = [
     dependsOn: [],
     locksWhenEdited: [],
     description: 'Average cost per unit',
+    allocationStrategy: {
+      default: { strategy: 'historical' },
+      historical: { lookbackYears: 1, sameTimePeriod: false }, // Cost patterns from previous year
+    },
+    allocationValidation: {
+      validateSum: true,
+      tolerance: 0.001, // Tighter tolerance for costs
+      onValidationFailure: 'error',
+    },
   },
 
   // ============= ADVANCED KPIs =============

@@ -32,6 +32,54 @@ export interface KPIValue {
   [key: string]: number;
 }
 
+/**
+ * Allocation strategy configuration
+ */
+export type AllocationStrategyType = 'pro_rata' | 'equal' | 'historical' | 'weighted' | 'custom';
+
+export interface AllocationStrategyConfig {
+  strategy: AllocationStrategyType;
+  historical?: {
+    lookbackYears: number;
+    sameTimePeriod: boolean;
+  };
+  weights?: {
+    column: string;
+    mapping: Record<string, number>;
+  };
+  customWeightSQL?: string;
+}
+
+/**
+ * Allocation strategy per aggregation level
+ * Supports both simple (one strategy for all) and advanced (per-level)
+ */
+export interface AllocationStrategy {
+  // Simple: One strategy for all cases
+  default?: AllocationStrategyConfig;
+
+  // Advanced: Per time aggregation level
+  time?: {
+    year?: AllocationStrategyConfig;
+    quarter?: AllocationStrategyConfig;
+    month?: AllocationStrategyConfig;
+  };
+
+  // Advanced: Per hierarchy aggregation level
+  hierarchy?: {
+    [level: string]: AllocationStrategyConfig;  // dept, subdept, category, etc.
+  };
+}
+
+/**
+ * Validation configuration for distribution
+ */
+export interface AllocationValidation {
+  validateSum: boolean;           // Validate that distributed values sum to edited value
+  tolerance: number;               // Acceptable difference (e.g., 0.01 for rounding)
+  onValidationFailure: 'error' | 'warn' | 'ignore';
+}
+
 export interface KPIConfig {
   name: KPIName;
   displayName: string;
@@ -44,6 +92,10 @@ export interface KPIConfig {
     offset: number;
     targetKPI: KPIName;
   }[];
+  // Allocation strategy - only for editable KPIs
+  allocationStrategy?: AllocationStrategy;
+  // Validation config for distribution
+  allocationValidation?: AllocationValidation;
 }
 
 export interface WeekData {

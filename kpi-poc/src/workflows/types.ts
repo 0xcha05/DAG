@@ -34,69 +34,36 @@ export interface WorkflowDefinition {
 }
 
 /**
- * Allocation strategy for distributing aggregated edits
+ * Time aggregation level for the edit
  */
-export type AllocationStrategy =
-  | 'pro_rata'      // Proportional to current values
-  | 'equal'         // Distribute equally
-  | 'historical'    // Based on historical patterns
-  | 'weighted'      // Custom weights
-  | 'custom';       // Custom SQL logic
+export type TimeAggregationLevel = 'year' | 'quarter' | 'month' | 'week';
 
 /**
- * Time aggregation configuration
+ * Hierarchy aggregation level for the edit
  */
-export interface TimeAggregation {
-  editLevel: 'year' | 'quarter' | 'month' | 'week';
-  storageLevel: 'week';  // Always week for our case
-  mapping: {
-    // How to map from edit level to storage level
-    // e.g., "toStartOfMonth(week_date)" for month → week
-    sqlExpression: string;
-  };
-}
+export type HierarchyAggregationLevel = string;  // 'dept', 'subdept', 'category', etc.
 
 /**
- * Hierarchy aggregation configuration
+ * Aggregation context - describes at what level the edit is being made
  */
-export interface HierarchyAggregation {
-  editLevel: string[];     // e.g., ['dept', 'channel']
-  storageLevel: string[];  // e.g., ['product_id', 'hierarchy_code', 'dept', 'channel']
-  rollupPath?: string[];   // Optional: hierarchy path for rollup
-}
-
-/**
- * Complete allocation configuration
- */
-export interface AllocationConfig {
-  strategy: AllocationStrategy;
-
-  // What level is the edit at?
-  aggregation: {
-    time: TimeAggregation;
-    hierarchy: HierarchyAggregation;
-    where: string;  // Filter clause (e.g., "dept = 'Electronics' AND year = 2024")
+export interface AggregationContext {
+  // Time dimension
+  time?: {
+    level: TimeAggregationLevel;
+    sqlExpression: string;  // How to map weeks to this level
   };
 
-  // How to distribute to granular level?
-  distribution: {
-    granularity: string[];  // Columns at storage level: ['product_id', 'week', 'year']
+  // Hierarchy dimension
+  hierarchy?: {
+    level: HierarchyAggregationLevel;  // e.g., 'dept', 'subdept'
+    levels: string[];  // All hierarchy columns: ['dept', 'subdept', 'category']
   };
 
-  // Custom allocation logic (for strategy = 'custom')
-  customWeightSQL?: string;
+  // Where clause for filtering
+  where: string;  // e.g., "dept = 'Electronics' AND year = 2024"
 
-  // Weighted allocation (for strategy = 'weighted')
-  weights?: {
-    column: string;  // e.g., 'product_tier'
-    mapping: Record<string, number>;  // e.g., { 'A': 3.0, 'B': 2.0, 'C': 1.0 }
-  };
-
-  // Historical allocation (for strategy = 'historical')
-  historical?: {
-    lookbackYears: number;  // e.g., 2 (use last 2 years)
-    sameTimePeriod: boolean;  // Match same month/quarter/etc.
-  };
+  // Distribution granularity (target level)
+  granularity: string[];  // ['product_id', 'week', 'year']
 }
 
 /**
@@ -105,8 +72,12 @@ export interface AllocationConfig {
 export interface WorkflowContext {
   editedKPI: KPIName;
   editedValue: number;
-  allocationConfig?: AllocationConfig;  // Present if aggregated edit
-  productId?: string;  // Present if single-product edit
-  week?: number;       // Present if single-week edit
+
+  // For aggregated edits
+  aggregationContext?: AggregationContext;
+
+  // For single-product edits
+  productId?: string;
+  week?: number;
   year?: number;
 }

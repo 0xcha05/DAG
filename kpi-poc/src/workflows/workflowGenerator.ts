@@ -1,42 +1,86 @@
 /**
- * Workflow Generator for KPI Edits
+ * Workflow Generator for KPI Edits (Version 2)
  *
- * Generates executable workflow definitions for:
- * 1. Aggregated edits (department/month level) → Distribution to granular level (product/week)
- * 2. Single-product edits → Direct KPI rebalancing
- *
- * All allocation strategies are config-driven.
+ * Generates executable workflow definitions using KPI-specific allocation strategies.
+ * The allocation strategy comes from the KPI config, not from the workflow context.
  */
 
-import type { KPIName } from '../types';
+import type { KPIName, AllocationStrategyConfig, AllocationValidation } from '../types';
 import type {
   WorkflowDefinition,
   WorkflowStep,
-  AllocationConfig,
-  AllocationStrategy,
   WorkflowContext,
-  TimeAggregation,
-  HierarchyAggregation,
+  AggregationContext,
 } from './types';
 import { topologicalSort } from '../engine/topologicalSort';
 import { kpiConfigs } from '../data/kpiConfig';
 
 /**
+ * Get allocation strategy for a KPI based on aggregation level
+ */
+function getAllocationStrategy(
+  kpiName: KPIName,
+  aggContext?: AggregationContext
+): AllocationStrategyConfig | null {
+  const kpiConfig = kpiConfigs.find(config => config.name === kpiName);
+  if (!kpiConfig || !kpiConfig.allocationStrategy) {
+    return null;
+  }
+
+  const strategy = kpiConfig.allocationStrategy;
+
+  // Check for time-specific strategy
+  if (aggContext?.time && strategy.time) {
+    const timeLevel = aggContext.time.level;
+    if (strategy.time[timeLevel]) {
+      return strategy.time[timeLevel]!;
+    }
+  }
+
+  // Check for hierarchy-specific strategy
+  if (aggContext?.hierarchy && strategy.hierarchy) {
+    const hierarchyLevel = aggContext.hierarchy.level;
+    if (strategy.hierarchy[hierarchyLevel]) {
+      return strategy.hierarchy[hierarchyLevel]!;
+    }
+  }
+
+  // Fall back to default strategy
+  if (strategy.default) {
+    return strategy.default;
+  }
+
+  return null;
+}
+
+/**
+ * Get validation config for a KPI
+ */
+function getValidationConfig(kpiName: KPIName): AllocationValidation | null {
+  const kpiConfig = kpiConfigs.find(config => config.name === kpiName);
+  return kpiConfig?.allocationValidation || null;
+}
+
+/**
  * Generate complete workflow for aggregated edit with allocation
- *
- * Example: User edits "Electronics Dept, January 2024, Sls U = 50,000"
- * → Distributes across all products in Electronics for all weeks in January
  */
 export function generateAggregatedEditWorkflow(
   context: WorkflowContext
 ): WorkflowDefinition {
-  if (!context.allocationConfig) {
-    throw new Error('Allocation config required for aggregated edits');
+  if (!context.aggregationContext) {
+    throw new Error('Aggregation context required for aggregated edits');
   }
 
-  const workflowId = `edit_${context.editedKPI.replace(/\s+/g, '_')}_${Date.now()}`;
+  const { editedKPI, editedValue, aggregationContext } = context;
+
+  // Get allocation strategy from KPI config
+  const strategyConfig = getAllocationStrategy(editedKPI, aggregationContext);
+  if (!strategyConfig) {
+    throw new Error(`No allocation strategy defined for ${editedKPI}`);
+  }
+
+  const workflowId = `edit_${editedKPI.replace(/\s+/g, '_')}_${Date.now()}`;
   const steps: WorkflowStep[] = [];
-  const config = context.allocationConfig;
 
   // Step 1: Calculate current aggregate value
   steps.push({
@@ -44,18 +88,18 @@ export function generateAggregatedEditWorkflow(
     description: 'Calculate current aggregate value before edit',
     source_table: 'kpi_data',
     target_table: `tmp_${workflowId}_current_aggregate`,
-    process_sql: generateAggregateQuerySQL(context.editedKPI, config),
+    process_sql: generateAggregateQuerySQL(editedKPI, aggregationContext),
     cleanup_source: false,
     dependencies: [],
   });
 
-  // Step 2: Calculate allocation weights based on strategy
+  // Step 2: Calculate allocation weights based on KPI's strategy
   steps.push({
     step_id: `${workflowId}_calculate_weights`,
-    description: `Calculate allocation weights using ${config.strategy} strategy`,
+    description: `Calculate allocation weights using ${strategyConfig.strategy} strategy`,
     source_table: 'kpi_data',
     target_table: `tmp_${workflowId}_weights`,
-    process_sql: generateAllocationWeightsSQL(context.editedKPI, config),
+    process_sql: generateAllocationWeightsSQL(editedKPI, strategyConfig, aggregationContext),
     cleanup_source: false,
     dependencies: [],
   });
@@ -67,8 +111,8 @@ export function generateAggregatedEditWorkflow(
     source_table: `tmp_${workflowId}_current_aggregate`,
     target_table: `tmp_${workflowId}_deltas`,
     process_sql: generateDeltaCalculationSQL(
-      context.editedValue,
-      config,
+      editedValue,
+      aggregationContext,
       `tmp_${workflowId}_current_aggregate`,
       `tmp_${workflowId}_weights`
     ),
@@ -79,29 +123,49 @@ export function generateAggregatedEditWorkflow(
   // Step 4: Apply edits to granular level
   steps.push({
     step_id: `${workflowId}_apply_edits`,
-    description: `Apply distributed edits to ${context.editedKPI}`,
+    description: `Apply distributed edits to ${editedKPI}`,
     source_table: `tmp_${workflowId}_deltas`,
     target_table: 'kpi_data',
     process_sql: generateApplyEditsSQL(
-      context.editedKPI,
-      config,
+      editedKPI,
+      aggregationContext,
       `tmp_${workflowId}_deltas`
     ),
     cleanup_source: true,
     dependencies: [`${workflowId}_calculate_deltas`],
   });
 
-  // Step 5+: Rebalance dependent KPIs
+  // Step 5: Validation (optional)
+  const validationConfig = getValidationConfig(editedKPI);
+  if (validationConfig && validationConfig.validateSum) {
+    steps.push({
+      step_id: `${workflowId}_validate`,
+      description: 'Validate distributed sum equals edited value',
+      source_table: 'kpi_data',
+      target_table: `tmp_${workflowId}_validation`,
+      process_sql: generateValidationSQL(
+        editedKPI,
+        editedValue,
+        aggregationContext,
+        validationConfig
+      ),
+      cleanup_source: true,
+      dependencies: [`${workflowId}_apply_edits`],
+    });
+  }
+
+  // Step 6+: Rebalance dependent KPIs
   const rebalanceSteps = generateRebalancingSteps(
     workflowId,
-    context.editedKPI,
-    config
+    editedKPI,
+    aggregationContext,
+    validationConfig?.validateSum ? [`${workflowId}_validate`] : [`${workflowId}_apply_edits`]
   );
   steps.push(...rebalanceSteps);
 
   return {
     workflow_id: workflowId,
-    description: `Edit ${context.editedKPI} at aggregated level and rebalance dependent KPIs`,
+    description: `Edit ${editedKPI} at aggregated level and rebalance dependent KPIs`,
     steps,
     memory_limits: {
       max_memory_mb: 2048,
@@ -114,9 +178,6 @@ export function generateAggregatedEditWorkflow(
 
 /**
  * Generate workflow for single-product edit (no allocation needed)
- *
- * Example: User edits "Product P001, Week 14, Sls U = 150"
- * → Direct update + rebalance dependent KPIs
  */
 export function generateSingleProductEditWorkflow(
   context: WorkflowContext
@@ -125,21 +186,22 @@ export function generateSingleProductEditWorkflow(
     throw new Error('Product ID, week, and year required for single-product edits');
   }
 
-  const workflowId = `edit_${context.editedKPI.replace(/\s+/g, '_')}_${Date.now()}`;
+  const { editedKPI, editedValue, productId, week, year } = context;
+  const workflowId = `edit_${editedKPI.replace(/\s+/g, '_')}_${Date.now()}`;
   const steps: WorkflowStep[] = [];
 
   // Step 1: Apply direct edit
   steps.push({
     step_id: `${workflowId}_apply_edit`,
-    description: `Update ${context.editedKPI} for product ${context.productId}`,
+    description: `Update ${editedKPI} for product ${productId}`,
     source_table: 'kpi_data',
     target_table: 'kpi_data',
     process_sql: `
 ALTER TABLE kpi_data
-UPDATE ${getKPIColumnName(context.editedKPI)} = ${context.editedValue}
-WHERE product_id = '${context.productId}'
-  AND year = ${context.year}
-  AND week = ${context.week}
+UPDATE ${getKPIColumnName(editedKPI)} = ${editedValue}
+WHERE product_id = '${productId}'
+  AND year = ${year}
+  AND week = ${week}
 `,
     cleanup_source: false,
     dependencies: [],
@@ -148,16 +210,16 @@ WHERE product_id = '${context.productId}'
   // Step 2+: Rebalance dependent KPIs
   const rebalanceSteps = generateRebalancingStepsForSingleProduct(
     workflowId,
-    context.editedKPI,
-    context.productId,
-    context.week,
-    context.year
+    editedKPI,
+    productId,
+    week,
+    year
   );
   steps.push(...rebalanceSteps);
 
   return {
     workflow_id: workflowId,
-    description: `Edit ${context.editedKPI} for single product and rebalance`,
+    description: `Edit ${editedKPI} for single product and rebalance`,
     steps,
     memory_limits: {
       max_memory_mb: 512,
@@ -173,26 +235,26 @@ WHERE product_id = '${context.productId}'
  */
 function generateAggregateQuerySQL(
   kpiName: KPIName,
-  config: AllocationConfig
+  aggContext: AggregationContext
 ): string {
   const kpiColumn = getKPIColumnName(kpiName);
-  const { time, hierarchy, where } = config.aggregation;
+  const { time, hierarchy, where } = aggContext;
 
   // Build time grouping expression
-  const timeGroupExpr = generateTimeGroupExpression(time);
+  const timeGroupExpr = time ? time.sqlExpression : 'NULL';
 
   // Build hierarchy grouping columns
-  const hierarchyGroupCols = hierarchy.editLevel.join(', ');
+  const hierarchyGroupCols = hierarchy ? hierarchy.levels.join(', ') : '1';
 
   return `
 -- Calculate current aggregate value
 SELECT
   ${timeGroupExpr} as time_group,
-  ${hierarchyGroupCols},
+  ${hierarchyGroupCols}${hierarchy ? ',' : ''}
   SUM(${kpiColumn}) as current_value
 FROM kpi_data
 WHERE ${where}
-GROUP BY time_group, ${hierarchyGroupCols}
+GROUP BY time_group${hierarchy ? ', ' + hierarchyGroupCols : ''}
 `;
 }
 
@@ -201,21 +263,22 @@ GROUP BY time_group, ${hierarchyGroupCols}
  */
 function generateAllocationWeightsSQL(
   kpiName: KPIName,
-  config: AllocationConfig
+  strategyConfig: AllocationStrategyConfig,
+  aggContext: AggregationContext
 ): string {
-  const { strategy } = config;
+  const { strategy } = strategyConfig;
 
   switch (strategy) {
     case 'pro_rata':
-      return generateProRataWeightsSQL(kpiName, config);
+      return generateProRataWeightsSQL(kpiName, aggContext);
     case 'equal':
-      return generateEqualWeightsSQL(kpiName, config);
+      return generateEqualWeightsSQL(kpiName, aggContext);
     case 'historical':
-      return generateHistoricalWeightsSQL(kpiName, config);
+      return generateHistoricalWeightsSQL(kpiName, strategyConfig, aggContext);
     case 'weighted':
-      return generateWeightedWeightsSQL(kpiName, config);
+      return generateWeightedWeightsSQL(kpiName, strategyConfig, aggContext);
     case 'custom':
-      return config.customWeightSQL || 'SELECT 1 as weight';
+      return strategyConfig.customWeightSQL || 'SELECT 1 as weight';
     default:
       throw new Error(`Unknown allocation strategy: ${strategy}`);
   }
@@ -226,14 +289,13 @@ function generateAllocationWeightsSQL(
  */
 function generateProRataWeightsSQL(
   kpiName: KPIName,
-  config: AllocationConfig
+  aggContext: AggregationContext
 ): string {
   const kpiColumn = getKPIColumnName(kpiName);
-  const { time, hierarchy, where } = config.aggregation;
-  const { granularity } = config.distribution;
+  const { time, hierarchy, where, granularity } = aggContext;
 
-  const timeMapExpr = time.mapping.sqlExpression;
-  const hierarchyGroupCols = hierarchy.editLevel.join(', ');
+  const timeMapExpr = time ? time.sqlExpression : 'NULL';
+  const hierarchyGroupCols = hierarchy ? hierarchy.levels.join(', ') : '';
   const granularityCols = granularity.join(', ');
 
   return `
@@ -241,7 +303,7 @@ function generateProRataWeightsSQL(
 WITH granular_values AS (
   SELECT
     ${timeMapExpr} as time_group,
-    ${hierarchyGroupCols},
+    ${hierarchyGroupCols}${hierarchyGroupCols ? ',' : ''}
     ${granularityCols},
     ${kpiColumn} as current_value
   FROM kpi_data
@@ -250,13 +312,12 @@ WITH granular_values AS (
 totals AS (
   SELECT
     time_group,
-    ${hierarchyGroupCols},
+    ${hierarchyGroupCols}${hierarchyGroupCols ? ',' : ''}
     SUM(current_value) as total_value
   FROM granular_values
-  GROUP BY time_group, ${hierarchyGroupCols}
+  GROUP BY time_group${hierarchyGroupCols ? ', ' + hierarchyGroupCols : ''}
 )
 SELECT
-  g.time_group,
   ${granularityCols.split(', ').map(col => `g.${col}`).join(', ')},
   CASE
     WHEN t.total_value = 0 THEN 0
@@ -265,7 +326,7 @@ SELECT
 FROM granular_values g
 JOIN totals t
   ON g.time_group = t.time_group
-  ${hierarchy.editLevel.map(col => `AND g.${col} = t.${col}`).join('\n  ')}
+  ${hierarchy ? hierarchy.levels.map(col => `AND g.${col} = t.${col}`).join('\n  ') : ''}
 `;
 }
 
@@ -274,13 +335,12 @@ JOIN totals t
  */
 function generateEqualWeightsSQL(
   kpiName: KPIName,
-  config: AllocationConfig
+  aggContext: AggregationContext
 ): string {
-  const { time, hierarchy, where } = config.aggregation;
-  const { granularity } = config.distribution;
+  const { time, hierarchy, where, granularity } = aggContext;
 
-  const timeMapExpr = time.mapping.sqlExpression;
-  const hierarchyGroupCols = hierarchy.editLevel.join(', ');
+  const timeMapExpr = time ? time.sqlExpression : 'NULL';
+  const hierarchyGroupCols = hierarchy ? hierarchy.levels.join(', ') : '';
   const granularityCols = granularity.join(', ');
 
   return `
@@ -288,7 +348,7 @@ function generateEqualWeightsSQL(
 WITH granular_records AS (
   SELECT
     ${timeMapExpr} as time_group,
-    ${hierarchyGroupCols},
+    ${hierarchyGroupCols}${hierarchyGroupCols ? ',' : ''}
     ${granularityCols}
   FROM kpi_data
   WHERE ${where}
@@ -296,19 +356,18 @@ WITH granular_records AS (
 counts AS (
   SELECT
     time_group,
-    ${hierarchyGroupCols},
+    ${hierarchyGroupCols}${hierarchyGroupCols ? ',' : ''}
     COUNT(*) as record_count
   FROM granular_records
-  GROUP BY time_group, ${hierarchyGroupCols}
+  GROUP BY time_group${hierarchyGroupCols ? ', ' + hierarchyGroupCols : ''}
 )
 SELECT
-  g.time_group,
   ${granularityCols.split(', ').map(col => `g.${col}`).join(', ')},
   1.0 / c.record_count as weight
 FROM granular_records g
 JOIN counts c
   ON g.time_group = c.time_group
-  ${hierarchy.editLevel.map(col => `AND g.${col} = c.${col}`).join('\n  ')}
+  ${hierarchy ? hierarchy.levels.map(col => `AND g.${col} = c.${col}`).join('\n  ') : ''}
 `;
 }
 
@@ -317,19 +376,19 @@ JOIN counts c
  */
 function generateHistoricalWeightsSQL(
   kpiName: KPIName,
-  config: AllocationConfig
+  strategyConfig: AllocationStrategyConfig,
+  aggContext: AggregationContext
 ): string {
-  if (!config.historical) {
+  if (!strategyConfig.historical) {
     throw new Error('Historical config required for historical strategy');
   }
 
   const kpiColumn = getKPIColumnName(kpiName);
-  const { time, hierarchy, where } = config.aggregation;
-  const { granularity } = config.distribution;
-  const { lookbackYears, sameTimePeriod } = config.historical;
+  const { time, hierarchy, where, granularity } = aggContext;
+  const { lookbackYears, sameTimePeriod } = strategyConfig.historical;
 
-  const timeMapExpr = time.mapping.sqlExpression;
-  const hierarchyGroupCols = hierarchy.editLevel.join(', ');
+  const timeMapExpr = time ? time.sqlExpression : 'NULL';
+  const hierarchyGroupCols = hierarchy ? hierarchy.levels.join(', ') : '';
   const granularityCols = granularity.join(', ');
 
   // Extract year from where clause for lookback calculation
@@ -337,7 +396,7 @@ function generateHistoricalWeightsSQL(
   const currentYear = yearMatch ? parseInt(yearMatch[1]) : 2024;
   const lookbackYearStart = currentYear - lookbackYears;
 
-  const timePeriodCondition = sameTimePeriod
+  const timePeriodCondition = sameTimePeriod && time
     ? `AND ${timeMapExpr} = (SELECT ${timeMapExpr} FROM kpi_data WHERE ${where} LIMIT 1)`
     : '';
 
@@ -346,25 +405,23 @@ function generateHistoricalWeightsSQL(
 WITH historical_values AS (
   SELECT
     ${timeMapExpr} as time_group,
-    ${hierarchyGroupCols},
+    ${hierarchyGroupCols}${hierarchyGroupCols ? ',' : ''}
     ${granularityCols},
     AVG(${kpiColumn}) as avg_historical_value
   FROM kpi_data
   WHERE year >= ${lookbackYearStart} AND year < ${currentYear}
     ${timePeriodCondition}
-    ${where.split('AND').slice(1).map(cond => `AND ${cond.trim()}`).join('\n    ')}
-  GROUP BY time_group, ${hierarchyGroupCols}, ${granularityCols}
+  GROUP BY time_group, ${hierarchyGroupCols}${hierarchyGroupCols ? ', ' : ''}${granularityCols}
 ),
 totals AS (
   SELECT
     time_group,
-    ${hierarchyGroupCols},
+    ${hierarchyGroupCols}${hierarchyGroupCols ? ',' : ''}
     SUM(avg_historical_value) as total_value
   FROM historical_values
-  GROUP BY time_group, ${hierarchyGroupCols}
+  GROUP BY time_group${hierarchyGroupCols ? ', ' + hierarchyGroupCols : ''}
 )
 SELECT
-  h.time_group,
   ${granularityCols.split(', ').map(col => `h.${col}`).join(', ')},
   CASE
     WHEN t.total_value = 0 THEN 0
@@ -373,7 +430,7 @@ SELECT
 FROM historical_values h
 JOIN totals t
   ON h.time_group = t.time_group
-  ${hierarchy.editLevel.map(col => `AND h.${col} = t.${col}`).join('\n  ')}
+  ${hierarchy ? hierarchy.levels.map(col => `AND h.${col} = t.${col}`).join('\n  ') : ''}
 `;
 }
 
@@ -382,18 +439,18 @@ JOIN totals t
  */
 function generateWeightedWeightsSQL(
   kpiName: KPIName,
-  config: AllocationConfig
+  strategyConfig: AllocationStrategyConfig,
+  aggContext: AggregationContext
 ): string {
-  if (!config.weights) {
+  if (!strategyConfig.weights) {
     throw new Error('Weights config required for weighted strategy');
   }
 
-  const { time, hierarchy, where } = config.aggregation;
-  const { granularity } = config.distribution;
-  const { column, mapping } = config.weights;
+  const { time, hierarchy, where, granularity } = aggContext;
+  const { column, mapping } = strategyConfig.weights;
 
-  const timeMapExpr = time.mapping.sqlExpression;
-  const hierarchyGroupCols = hierarchy.editLevel.join(', ');
+  const timeMapExpr = time ? time.sqlExpression : 'NULL';
+  const hierarchyGroupCols = hierarchy ? hierarchy.levels.join(', ') : '';
   const granularityCols = granularity.join(', ');
 
   // Build CASE statement for weight mapping
@@ -406,7 +463,7 @@ function generateWeightedWeightsSQL(
 WITH weighted_records AS (
   SELECT
     ${timeMapExpr} as time_group,
-    ${hierarchyGroupCols},
+    ${hierarchyGroupCols}${hierarchyGroupCols ? ',' : ''}
     ${granularityCols},
     CASE
       ${weightCaseStmt}
@@ -418,19 +475,18 @@ WITH weighted_records AS (
 totals AS (
   SELECT
     time_group,
-    ${hierarchyGroupCols},
+    ${hierarchyGroupCols}${hierarchyGroupCols ? ',' : ''}
     SUM(raw_weight) as total_weight
   FROM weighted_records
-  GROUP BY time_group, ${hierarchyGroupCols}
+  GROUP BY time_group${hierarchyGroupCols ? ', ' + hierarchyGroupCols : ''}
 )
 SELECT
-  w.time_group,
   ${granularityCols.split(', ').map(col => `w.${col}`).join(', ')},
   w.raw_weight / t.total_weight as weight
 FROM weighted_records w
 JOIN totals t
   ON w.time_group = t.time_group
-  ${hierarchy.editLevel.map(col => `AND w.${col} = t.${col}`).join('\n  ')}
+  ${hierarchy ? hierarchy.levels.map(col => `AND w.${col} = t.${col}`).join('\n  ') : ''}
 `;
 }
 
@@ -439,11 +495,11 @@ JOIN totals t
  */
 function generateDeltaCalculationSQL(
   editedValue: number,
-  config: AllocationConfig,
+  aggContext: AggregationContext,
   aggregateTable: string,
   weightsTable: string
 ): string {
-  const { granularity } = config.distribution;
+  const { granularity } = aggContext;
   const granularityCols = granularity.join(', ');
 
   return `
@@ -461,11 +517,11 @@ CROSS JOIN ${aggregateTable} a
  */
 function generateApplyEditsSQL(
   kpiName: KPIName,
-  config: AllocationConfig,
+  aggContext: AggregationContext,
   deltasTable: string
 ): string {
   const kpiColumn = getKPIColumnName(kpiName);
-  const { granularity } = config.distribution;
+  const { granularity } = aggContext;
 
   // Build WHERE clause to match granular records
   const whereConditions = granularity
@@ -489,26 +545,67 @@ WHERE EXISTS (
 }
 
 /**
+ * Generate validation SQL
+ */
+function generateValidationSQL(
+  kpiName: KPIName,
+  editedValue: number,
+  aggContext: AggregationContext,
+  validationConfig: AllocationValidation
+): string {
+  const kpiColumn = getKPIColumnName(kpiName);
+  const { where } = aggContext;
+  const { tolerance, onValidationFailure } = validationConfig;
+
+  const failureAction = onValidationFailure === 'error'
+    ? 'THROW'
+    : onValidationFailure === 'warn'
+    ? 'WARN'
+    : 'IGNORE';
+
+  return `
+-- Validate distribution sum
+WITH validation AS (
+  SELECT
+    SUM(${kpiColumn}) as actual_sum,
+    ${editedValue} as expected_sum,
+    ABS(SUM(${kpiColumn}) - ${editedValue}) as difference
+  FROM kpi_data
+  WHERE ${where}
+)
+SELECT
+  *,
+  CASE
+    WHEN difference > ${tolerance} THEN '${failureAction}: Sum mismatch by ' || toString(difference)
+    ELSE 'OK'
+  END as validation_result
+FROM validation
+`;
+}
+
+/**
  * Generate rebalancing steps for dependent KPIs
  */
 function generateRebalancingSteps(
   workflowId: string,
   editedKPI: KPIName,
-  config: AllocationConfig
+  aggContext: AggregationContext,
+  previousStepIds: string[]
 ): WorkflowStep[] {
   const steps: WorkflowStep[] = [];
   const lockedKPIs = new Set<KPIName>();
 
   // Get topological sort of dependent KPIs
-  const levels = topologicalSort(kpiConfigs, editedKPI, lockedKPIs);
+  const configsMap = new Map(kpiConfigs.map(c => [c.name, c]));
+  const levels = topologicalSort(configsMap, editedKPI, lockedKPIs);
 
-  let previousStepIds = [`${workflowId}_apply_edits`];
+  let currentDeps = previousStepIds;
 
   levels.forEach((level, levelIndex) => {
     const levelStepIds: string[] = [];
 
     level.forEach(kpi => {
-      const kpiConfig = kpiConfigs.get(kpi);
+      const kpiConfig = kpiConfigs.find(c => c.name === kpi);
       if (!kpiConfig || !kpiConfig.formula) return;
 
       const stepId = `${workflowId}_rebalance_${kpi.replace(/\s+/g, '_')}_L${levelIndex}`;
@@ -519,13 +616,13 @@ function generateRebalancingSteps(
         description: `Rebalance ${kpi} using formula: ${kpiConfig.formula}`,
         source_table: 'kpi_data',
         target_table: 'kpi_data',
-        process_sql: generateFormulaUpdateSQL(kpi, kpiConfig.formula, config),
+        process_sql: generateFormulaUpdateSQL(kpi, kpiConfig.formula, aggContext),
         cleanup_source: false,
-        dependencies: previousStepIds,
+        dependencies: currentDeps,
       });
     });
 
-    previousStepIds = levelStepIds;
+    currentDeps = levelStepIds;
   });
 
   return steps;
@@ -544,7 +641,8 @@ function generateRebalancingStepsForSingleProduct(
   const steps: WorkflowStep[] = [];
   const lockedKPIs = new Set<KPIName>();
 
-  const levels = topologicalSort(kpiConfigs, editedKPI, lockedKPIs);
+  const configsMap = new Map(kpiConfigs.map(c => [c.name, c]));
+  const levels = topologicalSort(configsMap, editedKPI, lockedKPIs);
 
   let previousStepIds = [`${workflowId}_apply_edit`];
 
@@ -552,7 +650,7 @@ function generateRebalancingStepsForSingleProduct(
     const levelStepIds: string[] = [];
 
     level.forEach(kpi => {
-      const kpiConfig = kpiConfigs.get(kpi);
+      const kpiConfig = kpiConfigs.find(c => c.name === kpi);
       if (!kpiConfig || !kpiConfig.formula) return;
 
       const stepId = `${workflowId}_rebalance_${kpi.replace(/\s+/g, '_')}_L${levelIndex}`;
@@ -587,10 +685,10 @@ function generateRebalancingStepsForSingleProduct(
 function generateFormulaUpdateSQL(
   kpiName: KPIName,
   formula: string,
-  config: AllocationConfig
+  aggContext: AggregationContext
 ): string {
   const kpiColumn = getKPIColumnName(kpiName);
-  const { where } = config.aggregation;
+  const { where } = aggContext;
 
   // Convert formula to SQL expression
   const sqlExpression = formulaToSQL(formula);
@@ -627,24 +725,6 @@ WHERE product_id = '${productId}'
 }
 
 /**
- * Generate time grouping expression based on edit level
- */
-function generateTimeGroupExpression(time: TimeAggregation): string {
-  switch (time.editLevel) {
-    case 'year':
-      return 'year';
-    case 'quarter':
-      return 'toQuarter(toDate(year, 1, 1) + toIntervalWeek(week))';
-    case 'month':
-      return 'toMonth(toDate(year, 1, 1) + toIntervalWeek(week))';
-    case 'week':
-      return 'week';
-    default:
-      throw new Error(`Unknown time edit level: ${time.editLevel}`);
-  }
-}
-
-/**
  * Convert KPI name to database column name
  */
 function getKPIColumnName(kpiName: KPIName): string {
@@ -670,6 +750,18 @@ function getKPIColumnName(kpiName: KPIName): string {
     'Dynamic MD Price': 'dynamic_md_price',
     'Promo Lift %': 'promo_lift_percent',
     'Rec Rcpt U': 'rec_rcpt_u',
+    'Return U': 'return_u',
+    'Return $': 'return_d',
+    'Return %': 'return_percent',
+    'AUR': 'aur',
+    'AUC': 'auc',
+    'Net Sls U': 'net_sls_u',
+    'Net Sls $': 'net_sls_d',
+    'Total Rcpt U': 'total_rcpt_u',
+    'Total Rcpt $': 'total_rcpt_d',
+    'Return Inv': 'return_inv',
+    'FWOS': 'fwos',
+    'Rec Rcpt $': 'rec_rcpt_d',
   };
 
   return columnMap[kpiName] || kpiName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
@@ -682,9 +774,13 @@ function formulaToSQL(formula: string): string {
   let sql = formula;
 
   // Replace KPI names with column names
-  const kpiPattern = /([A-Z][a-z]+ [A-Z$%]|[A-Z][A-Z]+)/g;
+  const kpiPattern = /([A-Z][a-z]+ [A-Z$%]|[A-Z][A-Z]+|[A-Z][a-z]+)/g;
   sql = sql.replace(kpiPattern, (match) => {
-    return getKPIColumnName(match as KPIName);
+    try {
+      return getKPIColumnName(match as KPIName);
+    } catch {
+      return match;
+    }
   });
 
   // Replace division with safe division (avoid divide by zero)
