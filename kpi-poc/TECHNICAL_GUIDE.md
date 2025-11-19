@@ -10,6 +10,7 @@
 6. [SQL Generation](#sql-generation)
 7. [Implementation Guide](#implementation-guide)
 8. [Dry Run Examples](#dry-run-examples)
+9. [Workflow Generation with Allocation](#workflow-generation-with-allocation)
 
 ---
 
@@ -1347,6 +1348,612 @@ Week 14:
   { week: 14, kpi: 'EOP U', oldValue: 440, newValue: 463.5 },
 ]
 ```
+
+---
+
+## Workflow Generation with Allocation
+
+### Overview
+
+For production deployments, the KPI rebalancing engine generates workflow definitions that external frameworks can execute. Workflows support two types of edits:
+
+1. **Single-Product Edits**: Direct update at granular level (product-week)
+2. **Aggregated Edits**: Edit at aggregated level (dept-month), distribute to granular level (product-week)
+
+### Workflow Structure
+
+```typescript
+interface WorkflowDefinition {
+  workflow_id: string;
+  description: string;
+  steps: WorkflowStep[];
+  memory_limits: {
+    max_memory_mb: number;
+    cleanup_threshold_mb: number;
+  };
+  max_parallel_steps: number;
+  timeout_seconds: number;
+}
+
+interface WorkflowStep {
+  step_id: string;
+  description: string;
+  source_table: string;
+  target_table: string;
+  process_sql: string;
+  cleanup_source: boolean;      // Whether to drop source table after execution
+  dependencies: string[];        // step_id values that must complete first
+}
+```
+
+### Single-Product Edit Workflow
+
+**Scenario:** User edits "Product P001, Week 14, 2024, Sls U = 150"
+
+**Generated Workflow:**
+
+```json
+{
+  "workflow_id": "edit_Sls_U_1637152923",
+  "description": "Edit Sls U for single product and rebalance",
+  "steps": [
+    {
+      "step_id": "edit_Sls_U_1637152923_apply_edit",
+      "description": "Update Sls U for product P001",
+      "source_table": "kpi_data",
+      "target_table": "kpi_data",
+      "process_sql": "ALTER TABLE kpi_data UPDATE sls_u = 150 WHERE product_id = 'P001' AND year = 2024 AND week = 14",
+      "cleanup_source": false,
+      "dependencies": []
+    },
+    {
+      "step_id": "edit_Sls_U_1637152923_rebalance_GM_$_L0",
+      "description": "Rebalance GM $ using formula: Sls $ - COGS",
+      "source_table": "kpi_data",
+      "target_table": "kpi_data",
+      "process_sql": "ALTER TABLE kpi_data UPDATE gm_d = divide(sls_d, cogs) WHERE product_id = 'P001' AND year = 2024 AND week = 14",
+      "cleanup_source": false,
+      "dependencies": ["edit_Sls_U_1637152923_apply_edit"]
+    }
+  ],
+  "memory_limits": { "max_memory_mb": 512, "cleanup_threshold_mb": 384 },
+  "max_parallel_steps": 4,
+  "timeout_seconds": 120
+}
+```
+
+### Aggregated Edit Workflow
+
+**Scenario:** User edits "Electronics Dept, January 2024, Sls U = 50,000"
+
+**Current State:**
+- Total current Sls U for Electronics in Jan 2024: 48,000
+- Delta to distribute: +2,000
+- Distribution strategy: Pro-rata (proportional to current values)
+
+**Generated Workflow:**
+
+```json
+{
+  "workflow_id": "edit_Sls_U_1637152924",
+  "description": "Edit Sls U at aggregated level and rebalance dependent KPIs",
+  "steps": [
+    {
+      "step_id": "edit_Sls_U_1637152924_calculate_current",
+      "description": "Calculate current aggregate value before edit",
+      "source_table": "kpi_data",
+      "target_table": "tmp_edit_Sls_U_1637152924_current_aggregate",
+      "process_sql": "SELECT toMonth(...) as time_group, dept, SUM(sls_u) as current_value FROM kpi_data WHERE dept = 'Electronics' AND ... GROUP BY time_group, dept",
+      "cleanup_source": false,
+      "dependencies": []
+    },
+    {
+      "step_id": "edit_Sls_U_1637152924_calculate_weights",
+      "description": "Calculate allocation weights using pro_rata strategy",
+      "source_table": "kpi_data",
+      "target_table": "tmp_edit_Sls_U_1637152924_weights",
+      "process_sql": "WITH granular_values AS (...) SELECT product_id, week, year, weight FROM ...",
+      "cleanup_source": false,
+      "dependencies": []
+    },
+    {
+      "step_id": "edit_Sls_U_1637152924_calculate_deltas",
+      "description": "Calculate delta to distribute across granular level",
+      "source_table": "tmp_edit_Sls_U_1637152924_current_aggregate",
+      "target_table": "tmp_edit_Sls_U_1637152924_deltas",
+      "process_sql": "SELECT w.product_id, w.week, w.year, (50000 - a.current_value) * w.weight as delta FROM tmp_..._weights w CROSS JOIN tmp_..._current_aggregate a",
+      "cleanup_source": true,
+      "dependencies": ["edit_Sls_U_1637152924_calculate_current", "edit_Sls_U_1637152924_calculate_weights"]
+    },
+    {
+      "step_id": "edit_Sls_U_1637152924_apply_edits",
+      "description": "Apply distributed edits to Sls U",
+      "source_table": "tmp_edit_Sls_U_1637152924_deltas",
+      "target_table": "kpi_data",
+      "process_sql": "ALTER TABLE kpi_data UPDATE sls_u = sls_u + (SELECT delta FROM tmp_..._deltas WHERE ...) WHERE EXISTS (...)",
+      "cleanup_source": true,
+      "dependencies": ["edit_Sls_U_1637152924_calculate_deltas"]
+    },
+    {
+      "step_id": "edit_Sls_U_1637152924_rebalance_GM_$_L0",
+      "description": "Rebalance GM $ using formula: Sls $ - COGS",
+      "source_table": "kpi_data",
+      "target_table": "kpi_data",
+      "process_sql": "ALTER TABLE kpi_data UPDATE gm_d = divide(sls_d, cogs) WHERE dept = 'Electronics' AND ...",
+      "cleanup_source": false,
+      "dependencies": ["edit_Sls_U_1637152924_apply_edits"]
+    }
+  ],
+  "memory_limits": { "max_memory_mb": 2048, "cleanup_threshold_mb": 1536 },
+  "max_parallel_steps": 4,
+  "timeout_seconds": 300
+}
+```
+
+### Allocation Strategies
+
+All allocation strategies are config-driven. The system supports 5 strategies:
+
+#### 1. Pro-Rata (Proportional)
+
+**Use Case:** Distribute delta proportionally to current values.
+
+**Config:**
+```typescript
+{
+  strategy: 'pro_rata',
+  aggregation: {
+    time: { editLevel: 'month', storageLevel: 'week', mapping: { sqlExpression: 'toMonth(...)' } },
+    hierarchy: { editLevel: ['dept'], storageLevel: ['product_id', 'dept'] },
+    where: "dept = 'Electronics' AND month = 1"
+  },
+  distribution: { granularity: ['product_id', 'week', 'year'] }
+}
+```
+
+**SQL Logic:**
+```sql
+-- Calculate weights proportional to current values
+WITH granular_values AS (
+  SELECT product_id, week, sls_u as current_value
+  FROM kpi_data
+  WHERE dept = 'Electronics' AND month = 1
+),
+totals AS (
+  SELECT SUM(current_value) as total_value FROM granular_values
+)
+SELECT
+  g.product_id,
+  g.week,
+  CASE WHEN t.total_value = 0 THEN 0 ELSE g.current_value / t.total_value END as weight
+FROM granular_values g
+CROSS JOIN totals t
+```
+
+**Example:**
+- Product P001, Week 1: Current = 100, Weight = 100/2000 = 0.05
+- Product P002, Week 1: Current = 200, Weight = 200/2000 = 0.10
+- Delta = +2000
+- P001 gets: 2000 * 0.05 = +100 → New value = 200
+- P002 gets: 2000 * 0.10 = +200 → New value = 400
+
+#### 2. Equal Distribution
+
+**Use Case:** Distribute delta evenly across all granular records.
+
+**Config:**
+```typescript
+{
+  strategy: 'equal',
+  // ... same aggregation/distribution config
+}
+```
+
+**SQL Logic:**
+```sql
+-- Each record gets equal weight
+WITH counts AS (
+  SELECT COUNT(*) as record_count
+  FROM kpi_data
+  WHERE dept = 'Electronics' AND month = 1
+)
+SELECT
+  product_id,
+  week,
+  1.0 / c.record_count as weight
+FROM kpi_data
+CROSS JOIN counts c
+WHERE dept = 'Electronics' AND month = 1
+```
+
+**Example:**
+- 20 product-week records
+- Delta = +2000
+- Each record gets: 2000 / 20 = +100
+
+#### 3. Historical Patterns
+
+**Use Case:** Distribute based on historical sales patterns from previous years.
+
+**Config:**
+```typescript
+{
+  strategy: 'historical',
+  aggregation: { /* ... */ },
+  distribution: { /* ... */ },
+  historical: {
+    lookbackYears: 2,        // Use data from 2022, 2023
+    sameTimePeriod: true     // Match same month/quarter
+  }
+}
+```
+
+**SQL Logic:**
+```sql
+-- Calculate weights from historical averages
+WITH historical_values AS (
+  SELECT
+    product_id,
+    week,
+    AVG(sls_u) as avg_historical_value
+  FROM kpi_data
+  WHERE dept = 'Electronics'
+    AND year IN (2022, 2023)
+    AND month = 1
+  GROUP BY product_id, week
+),
+totals AS (
+  SELECT SUM(avg_historical_value) as total_value FROM historical_values
+)
+SELECT
+  h.product_id,
+  h.week,
+  h.avg_historical_value / t.total_value as weight
+FROM historical_values h
+CROSS JOIN totals t
+```
+
+**Example:**
+- P001, Week 1: Historical avg = 150, Weight = 150/3000 = 0.05
+- P002, Week 1: Historical avg = 300, Weight = 300/3000 = 0.10
+- Distribution follows historical patterns
+
+#### 4. Weighted (Priority-Based)
+
+**Use Case:** Assign priority weights to product tiers or categories.
+
+**Config:**
+```typescript
+{
+  strategy: 'weighted',
+  aggregation: { /* ... */ },
+  distribution: { /* ... */ },
+  weights: {
+    column: 'product_tier',
+    mapping: {
+      'A': 3.0,   // A-tier gets 3x weight
+      'B': 2.0,   // B-tier gets 2x weight
+      'C': 1.0    // C-tier gets 1x weight
+    }
+  }
+}
+```
+
+**SQL Logic:**
+```sql
+-- Assign weights based on tier
+WITH weighted_records AS (
+  SELECT
+    product_id,
+    week,
+    CASE
+      WHEN product_tier = 'A' THEN 3.0
+      WHEN product_tier = 'B' THEN 2.0
+      WHEN product_tier = 'C' THEN 1.0
+      ELSE 1.0
+    END as raw_weight
+  FROM kpi_data
+  WHERE dept = 'Electronics' AND month = 1
+),
+totals AS (
+  SELECT SUM(raw_weight) as total_weight FROM weighted_records
+)
+SELECT
+  w.product_id,
+  w.week,
+  w.raw_weight / t.total_weight as weight
+FROM weighted_records w
+CROSS JOIN totals t
+```
+
+**Example:**
+- 5 A-tier products, 10 B-tier, 5 C-tier
+- Total weight = (5*3) + (10*2) + (5*1) = 15 + 20 + 5 = 40
+- A-tier product gets: weight = 3/40 = 0.075
+- B-tier product gets: weight = 2/40 = 0.05
+- C-tier product gets: weight = 1/40 = 0.025
+
+#### 5. Custom SQL
+
+**Use Case:** Complex business logic combining multiple factors.
+
+**Config:**
+```typescript
+{
+  strategy: 'custom',
+  aggregation: { /* ... */ },
+  distribution: { /* ... */ },
+  customWeightSQL: `
+    -- Blend historical patterns with seasonal factors
+    WITH historical AS (
+      SELECT product_id, week, AVG(sls_u) as avg_sls
+      FROM kpi_data WHERE year IN (2022, 2023)
+      GROUP BY product_id, week
+    ),
+    seasonal_factors AS (
+      SELECT week,
+        CASE
+          WHEN week BETWEEN 1 AND 13 THEN 0.8
+          WHEN week BETWEEN 14 AND 26 THEN 1.0
+          WHEN week BETWEEN 27 AND 39 THEN 1.2
+          ELSE 1.5
+        END as seasonal_factor
+      FROM (SELECT DISTINCT week FROM kpi_data)
+    )
+    SELECT
+      h.product_id,
+      h.week,
+      (h.avg_sls * s.seasonal_factor) / SUM(h.avg_sls * s.seasonal_factor) OVER () as weight
+    FROM historical h
+    JOIN seasonal_factors s ON h.week = s.week
+  `
+}
+```
+
+### Time Aggregation
+
+**Mapping Edit Level to Storage Level:**
+
+```typescript
+interface TimeAggregation {
+  editLevel: 'year' | 'quarter' | 'month' | 'week';
+  storageLevel: 'week';
+  mapping: {
+    sqlExpression: string;  // How to aggregate weeks
+  };
+}
+```
+
+**Examples:**
+
+| Edit Level | SQL Expression | Description |
+|-----------|----------------|-------------|
+| `year` | `year` | Group weeks by year |
+| `quarter` | `toQuarter(toDate(year, 1, 1) + toIntervalWeek(week))` | Map weeks to Q1-Q4 |
+| `month` | `toMonth(toDate(year, 1, 1) + toIntervalWeek(week))` | Map weeks to Jan-Dec |
+| `week` | `week` | Direct match (no aggregation) |
+
+**Scenario: Edit at Month Level**
+
+- User edits: "Electronics, January 2024, Sls U = 50,000"
+- Storage: Product-Week granularity
+- Mapping: All weeks in January (weeks 1-4) receive distributed values
+
+```sql
+-- Identify which weeks belong to January
+SELECT week
+FROM kpi_data
+WHERE toMonth(toDate(year, 1, 1) + toIntervalWeek(week)) = 1
+  AND year = 2024
+-- Returns: [1, 2, 3, 4]
+```
+
+### Hierarchy Aggregation
+
+**Mapping Edit Level to Storage Level:**
+
+```typescript
+interface HierarchyAggregation {
+  editLevel: string[];      // e.g., ['dept', 'channel']
+  storageLevel: string[];   // e.g., ['product_id', 'hierarchy_code', 'dept', 'channel']
+  rollupPath?: string[];    // e.g., ['product_id', 'category', 'sub_dept', 'dept']
+}
+```
+
+**Example Hierarchy:**
+
+```
+Department (dept)
+  └── Sub-Department (sub_dept)
+      └── Category (category)
+          └── Product (product_id)
+```
+
+**Scenario 1: Edit at Department Level**
+
+- User edits: "Electronics, 2024, Sls U = 500,000"
+- Distribution: Across all products in Electronics dept
+
+```typescript
+{
+  editLevel: ['dept'],
+  storageLevel: ['product_id', 'hierarchy_code', 'dept'],
+  rollupPath: ['product_id', 'category', 'sub_dept', 'dept']
+}
+```
+
+**Scenario 2: Edit at Sub-Department Level**
+
+- User edits: "Electronics → Televisions, Q1 2024, Sls U = 120,000"
+- Distribution: Across all TV products
+
+```typescript
+{
+  editLevel: ['dept', 'sub_dept'],
+  storageLevel: ['product_id', 'hierarchy_code', 'dept', 'sub_dept', 'category'],
+  rollupPath: ['product_id', 'category', 'sub_dept', 'dept']
+}
+```
+
+### Complete Example: Department + Month Edit
+
+**User Action:**
+Edit "Electronics Dept, January 2024, Sls U = 50,000"
+
+**Current State:**
+
+| Product | Week | Current Sls U |
+|---------|------|---------------|
+| P001 | 1 | 100 |
+| P001 | 2 | 150 |
+| P002 | 1 | 200 |
+| P002 | 2 | 250 |
+| P003 | 1 | 300 |
+| P003 | 2 | 350 |
+| ... | ... | ... |
+| **Total** | | **48,000** |
+
+**Allocation Config:**
+
+```typescript
+const config: AllocationConfig = {
+  strategy: 'pro_rata',
+
+  aggregation: {
+    time: {
+      editLevel: 'month',
+      storageLevel: 'week',
+      mapping: { sqlExpression: 'toMonth(toDate(year, 1, 1) + toIntervalWeek(week))' }
+    },
+    hierarchy: {
+      editLevel: ['dept'],
+      storageLevel: ['product_id', 'hierarchy_code', 'dept', 'channel']
+    },
+    where: "dept = 'Electronics' AND toMonth(toDate(year, 1, 1) + toIntervalWeek(week)) = 1 AND year = 2024"
+  },
+
+  distribution: {
+    granularity: ['product_id', 'week', 'year']
+  }
+};
+```
+
+**Workflow Execution:**
+
+**Step 1: Calculate Current Aggregate**
+```sql
+SELECT SUM(sls_u) as current_value
+FROM kpi_data
+WHERE dept = 'Electronics'
+  AND toMonth(toDate(year, 1, 1) + toIntervalWeek(week)) = 1
+  AND year = 2024
+-- Result: 48,000
+```
+
+**Step 2: Calculate Pro-Rata Weights**
+```sql
+WITH granular AS (
+  SELECT product_id, week, sls_u
+  FROM kpi_data
+  WHERE dept = 'Electronics' AND month = 1 AND year = 2024
+)
+SELECT
+  product_id,
+  week,
+  sls_u / 48000.0 as weight
+FROM granular
+```
+
+| Product | Week | Current | Weight |
+|---------|------|---------|--------|
+| P001 | 1 | 100 | 0.00208 (100/48000) |
+| P001 | 2 | 150 | 0.00312 (150/48000) |
+| P002 | 1 | 200 | 0.00417 (200/48000) |
+| P002 | 2 | 250 | 0.00521 (250/48000) |
+| ... | ... | ... | ... |
+
+**Step 3: Calculate Deltas**
+```sql
+SELECT
+  product_id,
+  week,
+  (50000 - 48000) * weight as delta
+FROM weights
+```
+
+| Product | Week | Delta |
+|---------|------|-------|
+| P001 | 1 | 2000 * 0.00208 = 4.16 |
+| P001 | 2 | 2000 * 0.00312 = 6.24 |
+| P002 | 1 | 2000 * 0.00417 = 8.34 |
+| P002 | 2 | 2000 * 0.00521 = 10.42 |
+| ... | ... | ... |
+
+**Step 4: Apply Edits**
+```sql
+ALTER TABLE kpi_data
+UPDATE sls_u = sls_u + delta
+WHERE (product_id, week, year) IN (SELECT product_id, week, year FROM deltas)
+```
+
+| Product | Week | Old | New |
+|---------|------|-----|-----|
+| P001 | 1 | 100 | 104.16 |
+| P001 | 2 | 150 | 156.24 |
+| P002 | 1 | 200 | 208.34 |
+| P002 | 2 | 250 | 260.42 |
+| ... | ... | ... | ... |
+| **Total** | | **48,000** | **50,000** ✓ |
+
+**Step 5+: Rebalance Dependent KPIs**
+
+Execute topological sort levels:
+- Level 0: GM $, WOS (depend on Sls U)
+- Level 1: GM% (depends on GM $)
+- etc.
+
+### Usage
+
+**Generate Single-Product Edit Workflow:**
+```typescript
+import { generateSingleProductEditWorkflow } from './workflows/workflowGenerator';
+
+const workflow = generateSingleProductEditWorkflow({
+  editedKPI: 'Sls U',
+  editedValue: 150,
+  productId: 'P001',
+  week: 14,
+  year: 2024
+});
+
+// Execute workflow via external framework
+executeWorkflow(workflow);
+```
+
+**Generate Aggregated Edit Workflow:**
+```typescript
+import { generateAggregatedEditWorkflow } from './workflows/workflowGenerator';
+
+const workflow = generateAggregatedEditWorkflow({
+  editedKPI: 'Sls U',
+  editedValue: 50000,
+  allocationConfig: {
+    strategy: 'pro_rata',
+    aggregation: {
+      time: { editLevel: 'month', storageLevel: 'week', mapping: { sqlExpression: 'toMonth(...)' } },
+      hierarchy: { editLevel: ['dept'], storageLevel: ['product_id', 'dept'] },
+      where: "dept = 'Electronics' AND month = 1 AND year = 2024"
+    },
+    distribution: { granularity: ['product_id', 'week', 'year'] }
+  }
+});
+
+executeWorkflow(workflow);
+```
+
+**See Full Examples:**
+- `/workflows/examples.ts` - 7 complete examples with different strategies
+- Examples include: year/month/quarter edits, pro-rata/equal/historical/weighted/custom strategies
 
 ---
 
