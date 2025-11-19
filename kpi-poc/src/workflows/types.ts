@@ -44,26 +44,43 @@ export type TimeAggregationLevel = 'year' | 'quarter' | 'month' | 'week';
 export type HierarchyAggregationLevel = string;  // 'dept', 'subdept', 'category', etc.
 
 /**
+ * Time dimension aggregation
+ * Describes how time is aggregated from storage level to edit level
+ */
+export interface TimeAggregation {
+  level: TimeAggregationLevel;  // What level user is editing at
+  sqlExpression: string;         // SQL to map from storage (week) to edit level
+}
+
+/**
+ * Hierarchy dimension aggregation
+ * Describes how hierarchy is aggregated from storage level to edit level
+ */
+export interface HierarchyAggregation {
+  level: HierarchyAggregationLevel;  // What level user is editing at (e.g., 'dept')
+  levels: string[];                   // All hierarchy columns at this level (e.g., ['dept'])
+}
+
+/**
  * Aggregation context - describes at what level the edit is being made
+ *
+ * This tells the system:
+ * - WHERE: Which aggregation level is the user editing at?
+ * - WHAT: Which records match the edit?
+ * - TARGET: Which granular records to distribute to?
  */
 export interface AggregationContext {
-  // Time dimension
-  time?: {
-    level: TimeAggregationLevel;
-    sqlExpression: string;  // How to map weeks to this level
-  };
+  // Time dimension (optional - if editing by time)
+  time?: TimeAggregation;
 
-  // Hierarchy dimension
-  hierarchy?: {
-    level: HierarchyAggregationLevel;  // e.g., 'dept', 'subdept'
-    levels: string[];  // All hierarchy columns: ['dept', 'subdept', 'category']
-  };
+  // Hierarchy dimension (optional - if editing by hierarchy)
+  hierarchy?: HierarchyAggregation;
 
-  // Where clause for filtering
+  // Filter: Which records to include
   where: string;  // e.g., "dept = 'Electronics' AND year = 2024"
 
-  // Distribution granularity (target level)
-  granularity: string[];  // ['product_id', 'week', 'year']
+  // Target: Where to distribute to (storage granularity)
+  granularity: string[];  // e.g., ['product_id', 'week', 'year']
 }
 
 /**

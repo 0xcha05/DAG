@@ -5,11 +5,58 @@
  * The allocation strategy comes from the KPI config, not from the workflow context.
  */
 
-import type { WorkflowContext, AggregationContext } from './types';
+import type {
+  WorkflowContext,
+  AggregationContext,
+  TimeAggregation,
+  HierarchyAggregation,
+} from './types';
 import {
   generateAggregatedEditWorkflow,
   generateSingleProductEditWorkflow,
 } from './workflowGenerator';
+
+/**
+ * ANATOMY OF AN AGGREGATION CONTEXT
+ *
+ * Breaking down each component:
+ *
+ * 1. TIME AGGREGATION (optional)
+ *    - level: What time level is the user editing at? (year, quarter, month, week)
+ *    - sqlExpression: SQL to map storage level (weeks) to edit level
+ *
+ * 2. HIERARCHY AGGREGATION (optional)
+ *    - level: What hierarchy level is the user editing at? (dept, subdept, category, etc.)
+ *    - levels: All hierarchy columns at this level
+ *
+ * 3. WHERE (required)
+ *    - Filter clause to identify which records to include
+ *
+ * 4. GRANULARITY (required)
+ *    - Target columns for distribution (storage level)
+ *
+ * Example breakdown:
+ *
+ * User action: "Edit Electronics department, January 2024, Sls U = 50,000"
+ *
+ * TIME:
+ *   - User is editing at MONTH level (January)
+ *   - Storage has WEEK level (weeks 1-52)
+ *   - sqlExpression maps weeks → month
+ *
+ * HIERARCHY:
+ *   - User is editing at DEPT level (Electronics)
+ *   - Storage has PRODUCT level (P001, P002, ...)
+ *   - levels: ['dept'] (all hierarchy columns at this level)
+ *
+ * WHERE:
+ *   - "dept = 'Electronics' AND month = 1 AND year = 2024"
+ *   - Filters to: Electronics products, January weeks, 2024
+ *
+ * GRANULARITY:
+ *   - ['product_id', 'week', 'year']
+ *   - Distribute to each product-week combination
+ */
 
 /**
  * Example 1: Department-level Sls U edit (year aggregation)
@@ -21,17 +68,24 @@ import {
  * Since this is a year-level edit, it will use the historical strategy.
  */
 export function example1_slsU_yearLevel() {
+  // Define TIME aggregation
+  const timeAggregation: TimeAggregation = {
+    level: 'year',           // User editing at YEAR level
+    sqlExpression: 'year',   // Map weeks → year (simple: just use year column)
+  };
+
+  // Define HIERARCHY aggregation
+  const hierarchyAggregation: HierarchyAggregation = {
+    level: 'dept',    // User editing at DEPT level
+    levels: ['dept'], // Only 1 hierarchy column at this level
+  };
+
+  // Combine into aggregation context
   const aggregationContext: AggregationContext = {
-    time: {
-      level: 'year',
-      sqlExpression: 'year',
-    },
-    hierarchy: {
-      level: 'dept',
-      levels: ['dept'],
-    },
-    where: "dept = 'Electronics' AND year = 2024",
-    granularity: ['product_id', 'week', 'year'],
+    time: timeAggregation,
+    hierarchy: hierarchyAggregation,
+    where: "dept = 'Electronics' AND year = 2024",  // Filter: Electronics + 2024
+    granularity: ['product_id', 'week', 'year'],    // Target: Distribute to product-week level
   };
 
   const context: WorkflowContext = {
@@ -53,15 +107,23 @@ export function example1_slsU_yearLevel() {
  * Since this is a month-level edit (not year), it will use the default: pro_rata.
  */
 export function example2_slsU_monthLevel() {
+  // Define TIME aggregation
+  const timeAggregation: TimeAggregation = {
+    level: 'month',  // User editing at MONTH level
+    // Map weeks → month (convert week number to month)
+    sqlExpression: 'toMonth(toDate(year, 1, 1) + toIntervalWeek(week))',
+  };
+
+  // Define HIERARCHY aggregation
+  const hierarchyAggregation: HierarchyAggregation = {
+    level: 'dept',
+    levels: ['dept'],
+  };
+
+  // Combine into aggregation context
   const aggregationContext: AggregationContext = {
-    time: {
-      level: 'month',
-      sqlExpression: 'toMonth(toDate(year, 1, 1) + toIntervalWeek(week))',
-    },
-    hierarchy: {
-      level: 'dept',
-      levels: ['dept'],
-    },
+    time: timeAggregation,
+    hierarchy: hierarchyAggregation,
     where: "dept = 'Electronics' AND toMonth(toDate(year, 1, 1) + toIntervalWeek(week)) = 1 AND year = 2024",
     granularity: ['product_id', 'week', 'year'],
   };
