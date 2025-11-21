@@ -62,21 +62,29 @@ kpi_data table:
 
 **Granularity = `[product_id, week, year]`** - the unique key that identifies one row of data.
 
-### Hierarchy Dimensions
+### Hierarchy and Filter Dimensions
 
-Products are organized hierarchically:
+Products are organized with various dimensions (schema varies by client):
 
 ```
-Product Hierarchy:
-Department (dept) → Sub-Department (subdept) → Category → Product
+Example 1 - Traditional Hierarchy:
+dept → subdept → category → product_id
 
-Example:
-Electronics → Televisions → LED TVs → PROD-001
+Example 2 - Level-based Hierarchy:
+l0_name → l1_name → l2_name → product_id
+
+Example 3 - Multi-dimensional:
+dept → subdept → category
++ channel → sub_channel
++ region → store_type
+→ product_id
 ```
+
+**Key Principle:** The system is **completely agnostic** to dimension names. Any field in the payload (except special fields) becomes a filter.
 
 Users can edit at any level:
 - **Granular:** PROD-001, Week 10 (one row)
-- **Aggregated:** Electronics dept, January (many rows - distribute across all products/weeks)
+- **Aggregated:** Any combination of dimensions + time (many rows - distribute across matching products/weeks)
 
 ### Time Dimensions
 
@@ -236,14 +244,19 @@ One endpoint handles both edit types. Backend auto-detects based on granularity 
   "product_id": "PROD-001",
   "week": 10,
 
-  // For AGGREGATED edit: specify hierarchy + time dimensions
-  "dept": "Electronics",
+  // For AGGREGATED edit: specify ANY filter dimensions
+  // (hierarchy, channels, regions - fully generic)
+  "l0_name": "Apparel",
+  "channel": "Online",
   "time_level": "month",
   "time_value": 1
 }
 ```
 
-**Note:** Client is determined by `CLIENT_ID` environment variable, not from payload.
+**Notes:**
+- Client is determined by `CLIENT_ID` environment variable, not from payload
+- Filter dimensions are **completely generic** - any field (not special) becomes a WHERE filter
+- Different clients have different schemas (dept/subdept OR l0_name/l1_name OR custom dimensions)
 
 ### Detection Logic
 
@@ -273,30 +286,50 @@ def detect_edit_type(payload: dict, granularity: list[str]) -> str:
 ```
 → Edit one product, one week (direct UPDATE)
 
-**Example 2: Aggregated Edit (Department + Month)**
+**Example 2: Aggregated Edit (Spanx - Level-based Hierarchy)**
 ```json
 {
   "kpi": "Sls U",
   "new_value": 50000,
-  "dept": "Electronics",
+  "l0_name": "Apparel",
+  "l1_name": "Shapewear",
+  "channel": "Online",
   "time_level": "month",
   "time_value": 1,
   "year": 2024
 }
 ```
-→ Edit all Electronics products, all weeks in January (needs allocation)
+→ Edit Apparel → Shapewear → Online, January 2024 (all matching products/weeks)
 
-**Example 3: Aggregated Edit (Department + Year)**
+**Example 3: Aggregated Edit (Client2 - Traditional Hierarchy)**
 ```json
 {
   "kpi": "Sls U",
   "new_value": 500000,
   "dept": "Electronics",
+  "subdept": "TVs",
+  "region": "West",
   "time_level": "year",
   "year": 2024
 }
 ```
-→ Edit all Electronics products, all weeks in 2024 (uses historical allocation)
+→ Edit Electronics → TVs → West region, all of 2024 (uses historical allocation)
+
+**Example 4: Aggregated Edit (Multi-dimensional)**
+```json
+{
+  "kpi": "Sls U",
+  "new_value": 75000,
+  "l0_name": "Accessories",
+  "channel": "Retail",
+  "sub_channel": "Department Store",
+  "region": "Northeast",
+  "time_level": "quarter",
+  "time_value": 1,
+  "year": 2024
+}
+```
+→ Edit Accessories → Retail → Department Store → Northeast, Q1 2024
 
 ---
 
@@ -307,16 +340,16 @@ def detect_edit_type(payload: dict, granularity: list[str]) -> str:
 ```
 configs/
 ├── spanx/
-│   ├── kpi_config.json
-│   └── settings.json (optional)
+│   └── kpi_config.json
 ├── client2/
-│   ├── kpi_config.json
-│   └── settings.json (optional)
+│   └── kpi_config.json
 └── example/
     └── kpi_config.json
 ```
 
 **Each client has a separate directory** for complete isolation. Client is loaded from environment variable `CLIENT_ID`.
+
+**Note:** All config is in `kpi_config.json` - no additional files needed.
 
 ### Config Schema
 
@@ -790,11 +823,9 @@ kpi-workflow-generator/
 │
 ├── configs/                         # Client-isolated configs
 │   ├── spanx/
-│   │   ├── kpi_config.json
-│   │   └── settings.json (optional)
+│   │   └── kpi_config.json
 │   ├── client2/
-│   │   ├── kpi_config.json
-│   │   └── settings.json (optional)
+│   │   └── kpi_config.json
 │   └── example/
 │       └── kpi_config.json
 │
@@ -1085,33 +1116,51 @@ def generate_time_sql_expression(time_level: str) -> str:
 
 def build_where_clause(payload: dict, client_config: dict) -> str:
     """
-    Build WHERE clause from payload filters.
+    Build WHERE clause from payload - fully generic, no hardcoded dimensions.
 
-    Handles both single and aggregated edits.
+    Any field in payload (except special fields) becomes a filter.
+    Supports any client schema: dept/subdept, l0_name/l1_name, channel, region, etc.
     """
     filters = []
 
-    # Granularity filters (for single edits)
-    for col in client_config["granularity"]:
-        if col in payload and payload[col] is not None:
-            filters.append(f"{col} = '{payload[col]}'")
+    # Special fields that are NOT filters
+    special_fields = {
+        'kpi',              # The KPI being edited
+        'new_value',        # The new value
+        'time_level',       # Time aggregation level (handled separately)
+        'time_value',       # Time aggregation value (handled separately)
+    }
 
-    # Hierarchy filters (for aggregated edits)
-    if "dept" in payload:
-        filters.append(f"dept = '{payload['dept']}'")
-    if "subdept" in payload:
-        filters.append(f"subdept = '{payload['subdept']}'")
+    # Add granularity columns to special fields (they're part of the key, not filters for aggregated edits)
+    granularity_set = set(client_config["granularity"])
 
-    # Time filters (for aggregated edits)
+    # Process all payload fields
+    for field, value in payload.items():
+        if field in special_fields:
+            continue
+
+        # For single edits, granularity fields become equality filters
+        # For aggregated edits, missing granularity fields mean "all values"
+        if field in granularity_set:
+            if value is not None:
+                if isinstance(value, str):
+                    filters.append(f"{field} = '{value}'")
+                else:
+                    filters.append(f"{field} = {value}")
+        else:
+            # Regular filter dimension (dept, channel, region, l0_name, etc.)
+            if value is not None:
+                if isinstance(value, str):
+                    filters.append(f"{field} = '{value}'")
+                else:
+                    filters.append(f"{field} = {value}")
+
+    # Handle time aggregation specially
     if "time_level" in payload and "time_value" in payload:
         time_sql = generate_time_sql_expression(payload["time_level"])
         filters.append(f"{time_sql} = {payload['time_value']}")
 
-    # Year filter (always present)
-    if "year" in payload:
-        filters.append(f"year = {payload['year']}")
-
-    return " AND ".join(filters)
+    return " AND ".join(filters) if filters else "1=1"
 ```
 
 ---
