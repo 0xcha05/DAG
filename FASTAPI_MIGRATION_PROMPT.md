@@ -718,6 +718,348 @@ def get_handler(handler_name: str) -> HandlerFunction:
 
 ---
 
+## 🎯 ALLOCATION STRATEGIES
+
+### Purpose
+
+When users edit at an **aggregated level** (e.g., "Electronics dept, January → 2000 units"), the system must distribute this value across the **storage level** (product × week rows). Allocation strategies determine how to split the aggregated edit.
+
+### The Allocation Problem
+
+**Storage Level (Granularity):** `["product_id", "week", "year"]`
+
+```
+product_id | dept        | week | year | sls_u (current)
+-----------|-------------|------|------|----------------
+PROD-001   | Electronics | 1    | 2024 | 100
+PROD-001   | Electronics | 2    | 2024 | 150
+PROD-001   | Electronics | 3    | 2024 | 120
+PROD-001   | Electronics | 4    | 2024 | 130
+PROD-002   | Electronics | 1    | 2024 | 200
+PROD-002   | Electronics | 2    | 2024 | 250
+PROD-002   | Electronics | 3    | 2024 | 220
+PROD-002   | Electronics | 4    | 2024 | 230
+```
+
+**User Edit:** "Electronics, January (weeks 1-4) → **2000 units**"
+
+**Current aggregate:** 100+150+120+130+200+250+220+230 = **1400**
+**Delta:** 2000 - 1400 = **+600** (needs to be distributed across 8 rows)
+
+### Strategy 1: Pro-Rata (Proportional)
+
+**Weight Formula:** `weight = current_value / sum(current_value)`
+
+Distribute based on current proportions.
+
+**File:** `app/engine/allocation/pro_rata.py`
+
+```python
+from typing import List
+
+def generate_pro_rata_sql(
+    kpi_column: str,
+    granularity: List[str],
+    where_clause: str,
+    database: str,
+    table: str,
+    new_value: float
+) -> str:
+    """
+    Generate pro-rata allocation SQL - FULLY GENERIC.
+
+    Uses window functions (no GROUP BY needed!).
+    Works for ANY client schema.
+
+    Args:
+        kpi_column: "sls_u", "cogs", etc.
+        granularity: ["product_id", "week", "year"] (from config)
+        where_clause: "dept = 'Electronics' AND ..." (from payload)
+        database: "spanx_kpi_data"
+        table: "kpi_data"
+        new_value: Target aggregate value (2000)
+
+    Returns:
+        SQL ALTER statement
+    """
+    granularity_cols = ", ".join(granularity)
+
+    sql = f"""
+    ALTER TABLE {database}.{table} AS target
+    UPDATE {kpi_column} = (
+        SELECT
+            {new_value} * ({kpi_column} / SUM({kpi_column}) OVER ())
+        FROM {database}.{table} AS source
+        WHERE source.{granularity[0]} = target.{granularity[0]}
+          {" AND ".join([f"AND source.{col} = target.{col}" for col in granularity[1:]])}
+    )
+    WHERE {where_clause}
+    """
+
+    return sql.strip()
+```
+
+**Why No GROUP BY?**
+
+Window functions (`OVER ()`) calculate aggregates **while preserving individual rows**:
+
+```sql
+-- Each row keeps its identity + knows the total
+SELECT
+  product_id, week, year,           -- Individual row
+  sls_u,                             -- Current value: 100, 150, 120, ...
+  SUM(sls_u) OVER () as total,      -- Total across ALL filtered rows: 1400
+  sls_u / SUM(sls_u) OVER () as weight  -- Weight: 0.0714, 0.1071, ...
+FROM table
+WHERE dept = 'Electronics' AND week BETWEEN 1 AND 4
+```
+
+**Result:**
+```
+product_id | week | sls_u (new)
+-----------|------|-------------
+PROD-001   | 1    | 142.86  (2000 * 100/1400)
+PROD-001   | 2    | 214.29  (2000 * 150/1400)
+PROD-001   | 3    | 171.43  (2000 * 120/1400)
+PROD-001   | 4    | 185.71  (2000 * 130/1400)
+PROD-002   | 1    | 285.71  (2000 * 200/1400)
+PROD-002   | 2    | 357.14  (2000 * 250/1400)
+PROD-002   | 3    | 314.29  (2000 * 220/1400)
+PROD-002   | 4    | 328.57  (2000 * 230/1400)
+```
+
+**Verification:** Sum = 2000 ✅
+
+### Strategy 2: Equal Distribution
+
+**Weight Formula:** `weight = 1 / count(*)`
+
+Distribute evenly across all rows.
+
+**File:** `app/engine/allocation/equal.py`
+
+```python
+from typing import List
+
+def generate_equal_sql(
+    kpi_column: str,
+    granularity: List[str],
+    where_clause: str,
+    database: str,
+    table: str,
+    new_value: float
+) -> str:
+    """
+    Generate equal distribution SQL - FULLY GENERIC.
+
+    Divides new_value equally across all matching rows.
+    """
+    granularity_cols = ", ".join(granularity)
+
+    sql = f"""
+    ALTER TABLE {database}.{table} AS target
+    UPDATE {kpi_column} = (
+        SELECT {new_value} / COUNT(*) OVER ()
+        FROM {database}.{table} AS source
+        WHERE source.{granularity[0]} = target.{granularity[0]}
+          {" AND ".join([f"AND source.{col} = target.{col}" for col in granularity[1:]])}
+    )
+    WHERE {where_clause}
+    """
+
+    return sql.strip()
+```
+
+**Result:**
+```
+product_id | week | sls_u (new)
+-----------|------|-------------
+PROD-001   | 1    | 250  (2000 / 8)
+PROD-001   | 2    | 250
+PROD-001   | 3    | 250
+PROD-001   | 4    | 250
+PROD-002   | 1    | 250
+PROD-002   | 2    | 250
+PROD-002   | 3    | 250
+PROD-002   | 4    | 250
+```
+
+### Strategy 3: Historical (Seasonal)
+
+**Weight Formula:** `weight = avg(past_value) / sum(avg(past_value))`
+
+Distribute based on historical patterns from previous periods.
+
+**File:** `app/engine/allocation/historical.py`
+
+```python
+from typing import List
+
+def generate_historical_sql(
+    kpi_column: str,
+    granularity: List[str],
+    where_clause: str,
+    database: str,
+    table: str,
+    new_value: float,
+    lookback_years: int = 2
+) -> str:
+    """
+    Generate historical allocation SQL - FULLY GENERIC.
+
+    Uses average from past N years for the same time period.
+    """
+    granularity_cols = ", ".join(granularity)
+
+    # Extract time columns from granularity (assuming 'year' is present)
+    time_cols = [col for col in granularity if col not in ['year']]
+    time_cols_str = ", ".join(time_cols)
+
+    sql = f"""
+    WITH historical_avg AS (
+        SELECT
+            {time_cols_str},
+            AVG({kpi_column}) as avg_value
+        FROM {database}.{table}
+        WHERE year BETWEEN (SELECT MIN(year) - {lookback_years} FROM {database}.{table} WHERE {where_clause})
+                      AND (SELECT MIN(year) - 1 FROM {database}.{table} WHERE {where_clause})
+        GROUP BY {time_cols_str}
+    )
+    ALTER TABLE {database}.{table} AS target
+    UPDATE {kpi_column} = (
+        SELECT
+            {new_value} * (h.avg_value / SUM(h.avg_value) OVER ())
+        FROM historical_avg h
+        WHERE {" AND ".join([f"h.{col} = target.{col}" for col in time_cols])}
+    )
+    WHERE {where_clause}
+    """
+
+    return sql.strip()
+```
+
+### Strategy 4: Weighted (Tier-based)
+
+**Weight Formula:** `weight = tier_weight / sum(tier_weight)`
+
+Distribute based on product tiers (A/B/C classification) or priorities.
+
+**File:** `app/engine/allocation/weighted.py`
+
+```python
+from typing import List, Dict
+
+def generate_weighted_sql(
+    kpi_column: str,
+    granularity: List[str],
+    where_clause: str,
+    database: str,
+    table: str,
+    new_value: float,
+    tier_column: str = "product_tier",
+    tier_weights: Dict[str, float] = {"A": 3.0, "B": 2.0, "C": 1.0}
+) -> str:
+    """
+    Generate weighted allocation SQL - FULLY GENERIC.
+
+    Distributes based on product tier or priority weights.
+    """
+    granularity_cols = ", ".join(granularity)
+
+    # Build CASE statement for tier weights
+    weight_cases = "\n            ".join([
+        f"WHEN {tier_column} = '{tier}' THEN {weight}"
+        for tier, weight in tier_weights.items()
+    ])
+
+    sql = f"""
+    ALTER TABLE {database}.{table} AS target
+    UPDATE {kpi_column} = (
+        SELECT
+            {new_value} * (
+                CASE
+                    {weight_cases}
+                    ELSE 1.0
+                END / SUM(
+                    CASE
+                        {weight_cases}
+                        ELSE 1.0
+                    END
+                ) OVER ()
+            )
+        FROM {database}.{table} AS source
+        WHERE source.{granularity[0]} = target.{granularity[0]}
+          {" AND ".join([f"AND source.{col} = target.{col}" for col in granularity[1:]])}
+    )
+    WHERE {where_clause}
+    """
+
+    return sql.strip()
+```
+
+### Allocation Strategy Registry
+
+**File:** `app/engine/allocation/__init__.py`
+
+```python
+from typing import Dict, Callable, List
+from app.engine.allocation.pro_rata import generate_pro_rata_sql
+from app.engine.allocation.equal import generate_equal_sql
+from app.engine.allocation.historical import generate_historical_sql
+from app.engine.allocation.weighted import generate_weighted_sql
+
+# Strategy function signature
+AllocationFunction = Callable[[str, List[str], str, str, str, float, ...], str]
+
+ALLOCATION_STRATEGIES: Dict[str, AllocationFunction] = {
+    "pro_rata": generate_pro_rata_sql,
+    "equal": generate_equal_sql,
+    "historical": generate_historical_sql,
+    "weighted": generate_weighted_sql,
+}
+
+def get_allocation_strategy(strategy_name: str) -> AllocationFunction:
+    """Get allocation strategy by name."""
+    if strategy_name not in ALLOCATION_STRATEGIES:
+        raise ValueError(f"Unknown allocation strategy: {strategy_name}")
+    return ALLOCATION_STRATEGIES[strategy_name]
+```
+
+### Generic Implementation: Key Points
+
+**1. Granularity comes from config** (never hardcoded):
+```python
+granularity = client_config["granularity"]  # ["product_id", "week", "year"]
+granularity_cols = ", ".join(granularity)    # "product_id, week, year"
+```
+
+**2. WHERE clause comes from payload** (any dimensions):
+```python
+where_clause = build_where_clause(payload, client_config)
+# Client 1: "dept = 'Electronics' AND subdept = 'TVs' AND month = 1"
+# Client 2: "l0_name = 'Apparel' AND channel = 'Online' AND quarter = 1"
+# Client 3: "region = 'West' AND category = 'Furniture' AND year = 2024"
+```
+
+**3. Window functions eliminate GROUP BY**:
+```python
+# ✅ Use window functions (keeps individual rows)
+SUM(value) OVER ()      # Total across filtered rows
+COUNT(*) OVER ()        # Count of filtered rows
+
+# ❌ Don't use GROUP BY (loses individual rows)
+SUM(value)
+GROUP BY product_id, week, year
+```
+
+**4. Works for ANY client schema**:
+- Traditional hierarchy: `dept`, `subdept`, `category`
+- Level-based: `l0_name`, `l1_name`, `l2_name`
+- Multi-dimensional: `channel`, `region`, `store_type`
+- Custom: Any combination of dimensions
+
+---
+
 ## 📤 OUTPUT: WORKFLOW JSON
 
 ### Structure
@@ -799,27 +1141,28 @@ kpi-workflow-generator/
 │   │   ├── config_loader.py         # Load/cache client configs
 │   │   └── sql_builder.py           # SQL generation utilities
 │   │
-│   ├── engine/
-│   │   ├── __init__.py
-│   │   ├── topological_sort.py      # Kahn's algorithm
-│   │   ├── formula_evaluator.py     # Convert formulas to SQL
-│   │   └── custom_handlers/
-│   │       ├── __init__.py
-│   │       ├── registry.py          # Handler registry
-│   │       ├── spanx/
-│   │       │   ├── __init__.py
-│   │       │   ├── spanx_fwos_handler.py
-│   │       │   ├── spanx_eop_bop_handler.py
-│   │       │   └── spanx_return_inv_handler.py
-│   │       └── client2/
-│   │           └── ...
-│   │
-│   └── allocation/
+│   └── engine/
 │       ├── __init__.py
-│       ├── pro_rata.py              # Pro-rata SQL generator
-│       ├── equal.py                 # Equal SQL generator
-│       ├── historical.py            # Historical SQL generator
-│       └── weighted.py              # Weighted SQL generator
+│       ├── topological_sort.py      # Kahn's algorithm
+│       ├── formula_evaluator.py     # Convert formulas to SQL
+│       │
+│       ├── custom_handlers/
+│       │   ├── __init__.py
+│       │   ├── registry.py          # Handler registry
+│       │   ├── spanx/
+│       │   │   ├── __init__.py
+│       │   │   ├── spanx_fwos_handler.py
+│       │   │   ├── spanx_eop_bop_handler.py
+│       │   │   └── spanx_return_inv_handler.py
+│       │   └── client2/
+│       │       └── ...
+│       │
+│       └── allocation/
+│           ├── __init__.py
+│           ├── pro_rata.py          # Pro-rata SQL generator
+│           ├── equal.py             # Equal SQL generator
+│           ├── historical.py        # Historical SQL generator
+│           └── weighted.py          # Weighted SQL generator
 │
 ├── configs/                         # Client-isolated configs
 │   ├── spanx/
@@ -1190,10 +1533,10 @@ def build_where_clause(payload: dict, client_config: dict) -> str:
 ### Phase 4: Workflow Generator (Days 7-9)
 12. Implement single edit workflow generation
 13. Implement aggregated edit workflow generation
-14. Implement allocation strategy SQL generators
-15. Add WHERE clause builder
-16. Add time SQL expression generator
-17. Write integration tests
+14. Implement allocation strategy SQL generators (pro-rata, equal, historical, weighted)
+15. Add generic WHERE clause builder (supports ANY payload dimensions)
+16. Add time SQL expression generator (backend-only)
+17. Write integration tests with diverse client schemas
 
 ### Phase 5: API & Testing (Days 10-11)
 18. Add FastAPI endpoint
@@ -1210,18 +1553,47 @@ def build_where_clause(payload: dict, client_config: dict) -> str:
 
 ## ✅ SUCCESS CRITERIA
 
+### Core Functionality
 - [ ] Single edit generates correct workflow JSON
 - [ ] Aggregated edit generates correct workflow JSON
-- [ ] Auto-detection works (single vs aggregated)
+- [ ] Auto-detection works (single vs aggregated based on granularity)
 - [ ] Topological sort handles dependencies correctly
 - [ ] Linear formulas convert to SQL correctly
 - [ ] Custom handlers generate correct SQL
 - [ ] Custom handlers accept params from config
-- [ ] Time SQL expressions generated correctly (backend)
-- [ ] WHERE clause built correctly from payload
-- [ ] Multiple clients supported (separate configs)
 - [ ] No cycles in dependency graph
+
+### Generic Dimension Support
+- [ ] WHERE clause built correctly from ANY payload fields (no hardcoded dept/subdept)
+- [ ] Allocation strategies use granularity from config (not hardcoded columns)
+- [ ] System works with traditional hierarchy (dept/subdept)
+- [ ] System works with level-based hierarchy (l0_name/l1_name/ln_name)
+- [ ] System works with multi-dimensional schemas (channel/region/etc.)
+- [ ] Payload examples demonstrate diverse client schemas
+
+### Allocation Strategies
+- [ ] Pro-rata allocation generates correct SQL
+- [ ] Equal distribution generates correct SQL
+- [ ] Historical allocation generates correct SQL
+- [ ] Weighted allocation generates correct SQL
+- [ ] All allocation strategies use window functions (no GROUP BY)
+
+### Client Isolation
+- [ ] Multiple clients supported (separate config directories)
+- [ ] Environment-based client loading (CLIENT_ID env var)
+- [ ] Custom handlers organized by client directory
+- [ ] No cross-client contamination
+
+### Backend SQL Generation
+- [ ] Time SQL expressions generated correctly (backend, not frontend)
+- [ ] WHERE clause supports time aggregation (week/month/quarter/year)
+- [ ] Multi-week effects handled correctly
+
+### Quality
 - [ ] 80%+ test coverage
+- [ ] Unit tests for all core components
+- [ ] Integration tests for workflow generation
+- [ ] API tests with diverse payload schemas
 
 ---
 
@@ -1240,7 +1612,7 @@ source venv/bin/activate
 pip install fastapi uvicorn pydantic
 
 # 4. Create structure
-mkdir -p app/{models,services,engine/custom_handlers/spanx,allocation}
+mkdir -p app/{models,services,engine/{custom_handlers/spanx,allocation}}
 mkdir -p configs/{spanx,client2,example} tests/{unit,integration,api}
 
 # 5. Create example config for Spanx
