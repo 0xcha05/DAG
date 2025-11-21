@@ -228,7 +228,6 @@ One endpoint handles both edit types. Backend auto-detects based on granularity 
 
 ```json
 {
-  "client_id": "spanx",
   "kpi": "Sls U",
   "new_value": 50000,
   "year": 2024,
@@ -243,6 +242,8 @@ One endpoint handles both edit types. Backend auto-detects based on granularity 
   "time_value": 1
 }
 ```
+
+**Note:** Client is determined by `CLIENT_ID` environment variable, not from payload.
 
 ### Detection Logic
 
@@ -263,7 +264,6 @@ def detect_edit_type(payload: dict, granularity: list[str]) -> str:
 **Example 1: Single Edit**
 ```json
 {
-  "client_id": "spanx",
   "kpi": "Sls U",
   "new_value": 150,
   "product_id": "PROD-001",
@@ -276,7 +276,6 @@ def detect_edit_type(payload: dict, granularity: list[str]) -> str:
 **Example 2: Aggregated Edit (Department + Month)**
 ```json
 {
-  "client_id": "spanx",
   "kpi": "Sls U",
   "new_value": 50000,
   "dept": "Electronics",
@@ -290,7 +289,6 @@ def detect_edit_type(payload: dict, granularity: list[str]) -> str:
 **Example 3: Aggregated Edit (Department + Year)**
 ```json
 {
-  "client_id": "spanx",
   "kpi": "Sls U",
   "new_value": 500000,
   "dept": "Electronics",
@@ -304,16 +302,21 @@ def detect_edit_type(payload: dict, granularity: list[str]) -> str:
 
 ## 🗂️ CLIENT CONFIG STRUCTURE
 
-### Location
+### Location (Client-Isolated)
 
 ```
 configs/
-├── spanx.json
-├── client2.json
-└── example.json
+├── spanx/
+│   ├── kpi_config.json
+│   └── settings.json (optional)
+├── client2/
+│   ├── kpi_config.json
+│   └── settings.json (optional)
+└── example/
+    └── kpi_config.json
 ```
 
-Each client has a separate config file defining their KPIs, formulas, and handlers.
+**Each client has a separate directory** for complete isolation. Client is loaded from environment variable `CLIENT_ID`.
 
 ### Config Schema
 
@@ -409,6 +412,70 @@ Each client has a separate config file defining their KPIs, formulas, and handle
 - User edits at aggregation level (dept-month)
 - System distributes to storage level (product-week)
 - They're different things!
+
+### Loading Client Config (Environment-Based)
+
+**Critical:** Client is determined by environment variable, ensuring complete isolation.
+
+```python
+import os
+import json
+from pathlib import Path
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
+def load_client_config() -> dict:
+    """
+    Load client config from environment.
+
+    Environment variable:
+        CLIENT_ID: Client identifier (e.g., "spanx", "client2")
+
+    Returns:
+        Client configuration dict
+
+    Raises:
+        ValueError: If CLIENT_ID not set or config not found
+    """
+    client_id = os.getenv("CLIENT_ID")
+    if not client_id:
+        raise ValueError("CLIENT_ID environment variable not set")
+
+    config_dir = Path("configs") / client_id
+    if not config_dir.exists():
+        raise ValueError(f"Config directory not found for client: {client_id}")
+
+    kpi_config_path = config_dir / "kpi_config.json"
+    if not kpi_config_path.exists():
+        raise ValueError(f"KPI config not found: {kpi_config_path}")
+
+    with open(kpi_config_path) as f:
+        config = json.load(f)
+
+    # Validate client_id matches
+    if config.get("client_id") != client_id:
+        raise ValueError(f"Config client_id mismatch: expected {client_id}, got {config.get('client_id')}")
+
+    return config
+```
+
+**Usage:**
+```bash
+# Start service for Spanx
+export CLIENT_ID=spanx
+uvicorn app.main:app --reload
+
+# Start service for Client2
+export CLIENT_ID=client2
+uvicorn app.main:app --reload
+```
+
+**Benefits:**
+- ✅ Complete client isolation (no risk of cross-client contamination)
+- ✅ One deployment, multiple clients (via environment)
+- ✅ Config caching with `@lru_cache`
+- ✅ Consistent with handler directory structure
+- ✅ Easy to add new clients (just create directory)
 
 ---
 
@@ -721,10 +788,15 @@ kpi-workflow-generator/
 │       ├── historical.py            # Historical SQL generator
 │       └── weighted.py              # Weighted SQL generator
 │
-├── configs/                         # Client KPI configs
-│   ├── spanx.json
-│   ├── client2.json
-│   └── example.json
+├── configs/                         # Client-isolated configs
+│   ├── spanx/
+│   │   ├── kpi_config.json
+│   │   └── settings.json (optional)
+│   ├── client2/
+│   │   ├── kpi_config.json
+│   │   └── settings.json (optional)
+│   └── example/
+│       └── kpi_config.json
 │
 ├── tests/
 │   ├── __init__.py
@@ -754,7 +826,7 @@ POST /generate-workflow
     ↓
 1. Parse payload (Pydantic validation)
     ↓
-2. Load client config from configs/{client_id}.json
+2. Load client config (from CLIENT_ID env var → configs/{client_id}/kpi_config.json)
     ↓
 3. Detect edit type:
    - Has all granularity? → SINGLE
@@ -1120,10 +1192,10 @@ pip install fastapi uvicorn pydantic
 
 # 4. Create structure
 mkdir -p app/{models,services,engine/custom_handlers/spanx,allocation}
-mkdir -p configs tests/{unit,integration,api}
+mkdir -p configs/{spanx,client2,example} tests/{unit,integration,api}
 
-# 5. Create example config
-cat > configs/spanx.json << 'EOF'
+# 5. Create example config for Spanx
+cat > configs/spanx/kpi_config.json << 'EOF'
 {
   "client_id": "spanx",
   "database": "spanx_kpi_data",
@@ -1133,7 +1205,10 @@ cat > configs/spanx.json << 'EOF'
 }
 EOF
 
-# 6. Start building!
+# 6. Set environment variable for client
+export CLIENT_ID=spanx
+
+# 7. Start building!
 ```
 
 ---
@@ -1207,10 +1282,11 @@ Study these TypeScript files from the POC to understand the business logic:
    - Has all granularity columns? → Single
    - Missing granularity? → Aggregated
 
-4. **Client-specific everything**
-   - Separate config files per client
-   - Separate handler directories per client
-   - One codebase serves all clients
+4. **Client-specific everything (environment-isolated)**
+   - Separate config directories per client (`configs/spanx/`, `configs/client2/`)
+   - Separate handler directories per client (`custom_handlers/spanx/`)
+   - Client loaded from `CLIENT_ID` environment variable
+   - One codebase serves all clients with complete isolation
 
 5. **We generate workflows, don't execute them**
    - Output: JSON with SQL steps
