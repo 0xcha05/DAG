@@ -2,38 +2,101 @@
 
 ## 🎯 MISSION
 
-Build a **Python FastAPI service** that generates SQL workflow JSON from client-specific KPI configurations. When the frontend sends a KPI edit (single or aggregated), this service reads the client's config and generates a complete workflow with SQL steps.
+Build a **Python FastAPI service** that generates SQL workflow JSON from client-specific KPI configurations. When a user edits a KPI value (either at granular or aggregated level), this service generates a complete workflow of SQL statements that maintain KPI relationships and business rules.
 
-**Reference Codebase:** `/home/user/DAG/kpi-poc/` (TypeScript/React POC - approved)
-
----
-
-## 📋 WHAT THIS SERVICE DOES
-
-### NOT Building
-❌ Full CRUD API with 20+ endpoints
-❌ Database management endpoints
-❌ User authentication
-❌ Direct data manipulation
-
-### Actually Building
-✅ **Workflow generator** that takes edit payload + config → returns workflow JSON
-✅ **Client-specific KPI configs** (spanx.json, client2.json, etc.)
-✅ **Two handler types:**
-   - Linear cases (formula-based KPIs)
-   - Custom handlers (Python functions for complex logic)
-✅ **Topological sort** for dependency ordering
-✅ **Allocation strategies** for aggregated edits
+**Reference Codebase:** `/home/user/DAG/kpi-poc/` (TypeScript/React POC - approved for production)
 
 ---
 
-## 🏗️ HIGH-LEVEL ARCHITECTURE
+## 📖 THE PROBLEM
+
+### Business Context
+
+Retail merchandisers work with **interdependent business metrics** (KPIs) like:
+- Sales Units, Sales Dollars, Average Unit Retail
+- Cost of Goods Sold, Gross Margin, Gross Margin %
+- Beginning/End of Period Inventory, Receipts
+- Return rates, Return Inventory
+- Forward Weeks of Supply, Recommended Receipts
+
+**The Challenge:** When a user edits one KPI, dozens of dependent KPIs must recalculate automatically while:
+- Respecting mathematical relationships (e.g., AUR = Sales $ / Sales Units)
+- Maintaining business constraints (e.g., if Sales Units change, keep Discount Rate fixed)
+- Handling multi-week effects (e.g., this week's ending inventory becomes next week's beginning inventory)
+- Supporting both granular edits (one product, one week) and aggregated edits (entire department, entire month)
+
+### Current State
+
+- **95GB+ datasets** across multiple clients (Spanx, etc.)
+- **Complex dependencies:** Up to 29 interdependent KPIs
+- **Two edit modes:**
+  - Granular: Edit PROD-001, Week 10, Sales Units = 150
+  - Aggregated: Edit Electronics dept, January 2024, Sales Units = 50,000 (distribute across all products/weeks)
+
+### Why This is Hard
+
+1. **Dependency ordering:** Must calculate KPIs in correct order (topological sort)
+2. **Lock strategies:** Some KPIs lock others during recalculation (maintain business rules)
+3. **Multi-week cascading:** Changes ripple through subsequent weeks (inventory transitions)
+4. **Allocation strategies:** Aggregated edits need intelligent distribution (pro-rata, historical patterns, etc.)
+5. **Client-specific logic:** Each client has unique KPI formulas and custom handlers
+
+---
+
+## 💾 THE DATA MODEL
+
+### Storage Grain (Granularity)
+
+Data is stored at **product-week-year** level:
+
+```
+kpi_data table:
+┌────────────┬──────┬──────┬───────┬──────────┬─────┬──────┬─────────┐
+│ product_id │ week │ year │ sls_u │ sls_$    │ aur │ cogs │ gm_$    │
+├────────────┼──────┼──────┼───────┼──────────┼─────┼──────┼─────────┤
+│ PROD-001   │ 8    │ 2024 │ 90    │ 900      │ 10  │ 540  │ 360     │
+│ PROD-001   │ 9    │ 2024 │ 95    │ 950      │ 10  │ 570  │ 380     │
+│ PROD-002   │ 8    │ 2024 │ 200   │ 2000     │ 10  │ 1200 │ 800     │
+└────────────┴──────┴──────┴───────┴──────────┴─────┴──────┴─────────┘
+```
+
+**Granularity = `[product_id, week, year]`** - the unique key that identifies one row of data.
+
+### Hierarchy Dimensions
+
+Products are organized hierarchically:
+
+```
+Product Hierarchy:
+Department (dept) → Sub-Department (subdept) → Category → Product
+
+Example:
+Electronics → Televisions → LED TVs → PROD-001
+```
+
+Users can edit at any level:
+- **Granular:** PROD-001, Week 10 (one row)
+- **Aggregated:** Electronics dept, January (many rows - distribute across all products/weeks)
+
+### Time Dimensions
+
+Data is stored at **week** level, but users can edit at:
+- **Week:** Week 10 (granular)
+- **Month:** January = Weeks 1-4 (aggregated)
+- **Quarter:** Q1 = Weeks 1-13 (aggregated)
+- **Year:** 2024 = Weeks 1-52 (aggregated)
+
+---
+
+## 🏗️ THE SOLUTION
+
+### High-Level Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     Frontend (React)                         │
 │                                                              │
-│  User edits KPI → Sends payload to backend                 │
+│  User edits KPI → Sends payload                             │
 └──────────────────────────┬───────────────────────────────────┘
                            │
                            ▼
@@ -41,138 +104,218 @@ Build a **Python FastAPI service** that generates SQL workflow JSON from client-
 │               FastAPI Workflow Generator                     │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
-│  1. Receive edit payload (single or aggregated)             │
-│  2. Load client's KPI config (spanx.json)                   │
-│  3. Topological sort → determine calculation order          │
-│  4. For each affected KPI:                                  │
-│     - If linear: Generate SQL from formula                  │
-│     - If custom handler: Call Python function → get SQL     │
-│  5. Return workflow JSON with all SQL steps                 │
+│  1. Receive payload (auto-detect single vs aggregated)      │
+│  2. Load client config (configs/spanx.json)                 │
+│  3. Apply lock strategy                                     │
+│  4. Topological sort → calculation order                    │
+│  5. For each affected KPI:                                  │
+│     ├─ Linear: formula → SQL                                │
+│     └─ Custom: call Python handler → SQL                    │
+│  6. Build workflow JSON with all SQL steps                  │
 │                                                              │
 └─────────────────────────┬───────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                  Workflow JSON Output                        │
-│                                                              │
-│  {                                                           │
-│    "workflow_id": "...",                                     │
-│    "steps": [                                                │
-│      { "step_id": "...", "sql": "...", ... },               │
-│      { "step_id": "...", "sql": "...", ... }                │
-│    ]                                                         │
-│  }                                                           │
+│  (Executed by external system: Airflow, Dagster, etc.)      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**External system** (Airflow, Dagster, etc.) executes the workflow JSON.
+### Core Concepts
 
----
+#### 1. DAG (Directed Acyclic Graph)
 
-## 📥 INPUT: FRONTEND PAYLOADS
+KPI dependencies form a graph:
 
-### Payload 1: Single KPI Edit
+```
+Editable KPIs
+    ↓
+Sls U, Sls $, DR%, AUC, BOP U
+    ↓
+Level 1: Direct calculations
+    ↓
+AUR = Sls $ / Sls U
+COGS = Sls U * AUC
+    ↓
+Level 2: Dependent calculations
+    ↓
+GM $ = Sls $ - COGS
+    ↓
+Level 3: Higher-level calculations
+    ↓
+GM % = GM $ / Sls $
+```
 
-**Use case:** User edits one product, one week, one KPI.
+**Topological sort** (Kahn's algorithm) determines correct calculation order.
 
+#### 2. Two Handler Types
+
+**Linear Handlers** (formula-based):
 ```json
 {
-  "client_id": "spanx",
-  "edit_type": "single",
-  "product_id": "PROD-001",
-  "week": 10,
-  "year": 2024,
-  "kpi": "Sls U",
-  "new_value": 150
+  "name": "COGS",
+  "handler_type": "linear",
+  "formula": "Sls U * AUC",
+  "depends_on": ["Sls U", "AUC"]
+}
+```
+→ Generates: `UPDATE kpi_data SET cogs = sls_u * auc WHERE ...`
+
+**Custom Handlers** (Python functions):
+```json
+{
+  "name": "FWOS",
+  "handler_type": "custom",
+  "custom_handler": "spanx_fwos_handler",
+  "handler_params": {"number_of_weeks": 6},
+  "depends_on": ["EOP U", "Sls U"]
+}
+```
+→ Calls: `spanx_fwos_handler(kpi_name, config, params, filters, ...)` → returns SQL
+
+#### 3. Auto-Detection (Single vs Aggregated)
+
+**Detection Rule:** If payload contains ALL granularity columns → Single. Otherwise → Aggregated.
+
+```python
+granularity = ["product_id", "week", "year"]  # From config
+
+# Single edit (has all granularity):
+payload = {"product_id": "PROD-001", "week": 10, "year": 2024, ...}
+→ SINGLE (direct UPDATE)
+
+# Aggregated edit (missing granularity):
+payload = {"dept": "Electronics", "time_level": "month", "time_value": 1, "year": 2024, ...}
+→ AGGREGATED (needs allocation/distribution)
+```
+
+#### 4. Allocation Strategies
+
+When distributing aggregated edits to granular storage:
+
+| Strategy | Description | Weight Formula |
+|----------|-------------|----------------|
+| **pro_rata** | Proportional to current values | `weight = current_value / sum(current_value)` |
+| **equal** | Distribute evenly | `weight = 1 / count(*)` |
+| **historical** | Based on past patterns (seasonal) | `weight = avg(past_value) / sum(avg(past_value))` |
+| **weighted** | Priority-based (A/B/C tiers) | `weight = tier_weight / sum(tier_weight)` |
+
+Strategy is defined **per KPI** in the config:
+```json
+{
+  "name": "Sls U",
+  "allocation_strategy": {
+    "default": {"strategy": "pro_rata"},
+    "time": {
+      "year": {"strategy": "historical", "lookback_years": 2}
+    }
+  }
 }
 ```
 
-### Payload 2: Aggregated KPI Edit
+---
 
-**Use case:** User edits at department-month level, needs distribution.
+## 📥 INPUT: UNIFIED PAYLOAD
+
+### Single Endpoint
+
+**POST `/generate-workflow`**
+
+One endpoint handles both edit types. Backend auto-detects based on granularity columns.
+
+### Payload Structure
 
 ```json
 {
   "client_id": "spanx",
-  "edit_type": "aggregated",
   "kpi": "Sls U",
   "new_value": 50000,
-  "aggregation_context": {
-    "time": {
-      "level": "month",
-      "sql_expression": "toMonth(toDate(year, 1, 1) + toIntervalWeek(week))"
-    },
-    "hierarchy": {
-      "level": "dept",
-      "levels": ["dept"]
-    },
-    "where": "dept = 'Electronics' AND toMonth(toDate(year, 1, 1) + toIntervalWeek(week)) = 1 AND year = 2024",
-    "granularity": ["product_id", "week", "year"]
-  }
+  "year": 2024,
+
+  // For SINGLE edit: specify ALL granularity columns
+  "product_id": "PROD-001",
+  "week": 10,
+
+  // For AGGREGATED edit: specify hierarchy + time dimensions
+  "dept": "Electronics",
+  "time_level": "month",
+  "time_value": 1
 }
 ```
 
----
+### Detection Logic
 
-## 📤 OUTPUT: WORKFLOW JSON
+```python
+def detect_edit_type(payload: dict, granularity: list[str]) -> str:
+    """
+    Auto-detect edit type based on presence of granularity columns.
+    """
+    has_all_granularity = all(
+        col in payload and payload[col] is not None
+        for col in granularity
+    )
+    return "single" if has_all_granularity else "aggregated"
+```
 
-### Structure
+### Example Payloads
 
+**Example 1: Single Edit**
 ```json
 {
-  "workflow_id": "spanx_edit_Sls_U_1234567890",
   "client_id": "spanx",
-  "description": "Edit Sls U at dept-month level",
-  "steps": [
-    {
-      "step_id": "step_1_calculate_current_aggregate",
-      "description": "Calculate current aggregate value",
-      "sql": "SELECT dept, SUM(sls_u) as current_value FROM kpi_data WHERE dept = 'Electronics' AND ... GROUP BY dept",
-      "dependencies": [],
-      "cleanup": false
-    },
-    {
-      "step_id": "step_2_calculate_weights",
-      "description": "Calculate allocation weights using pro_rata",
-      "sql": "WITH granular AS (...) SELECT product_id, week, year, weight FROM ...",
-      "dependencies": ["step_1_calculate_current_aggregate"],
-      "cleanup": false
-    },
-    {
-      "step_id": "step_3_apply_edit_sls_u",
-      "description": "Apply delta to Sls U",
-      "sql": "ALTER TABLE kpi_data UPDATE sls_u = sls_u + delta WHERE ...",
-      "dependencies": ["step_2_calculate_weights"],
-      "cleanup": false
-    },
-    {
-      "step_id": "step_4_recalc_cogs",
-      "description": "Recalculate COGS (linear)",
-      "sql": "ALTER TABLE kpi_data UPDATE cogs = sls_u * auc WHERE ...",
-      "dependencies": ["step_3_apply_edit_sls_u"],
-      "cleanup": false
-    },
-    {
-      "step_id": "step_5_recalc_eop_u",
-      "description": "Recalculate EOP U (custom handler)",
-      "sql": "ALTER TABLE kpi_data UPDATE eop_u = bop_u - sls_u + total_rcpt_u + return_inv WHERE ...",
-      "dependencies": ["step_3_apply_edit_sls_u"],
-      "cleanup": false
-    }
-  ],
-  "metadata": {
-    "execution_mode": "clickhouse",
-    "max_parallel_steps": 4,
-    "timeout_seconds": 300
-  }
+  "kpi": "Sls U",
+  "new_value": 150,
+  "product_id": "PROD-001",
+  "week": 10,
+  "year": 2024
 }
 ```
+→ Edit one product, one week (direct UPDATE)
+
+**Example 2: Aggregated Edit (Department + Month)**
+```json
+{
+  "client_id": "spanx",
+  "kpi": "Sls U",
+  "new_value": 50000,
+  "dept": "Electronics",
+  "time_level": "month",
+  "time_value": 1,
+  "year": 2024
+}
+```
+→ Edit all Electronics products, all weeks in January (needs allocation)
+
+**Example 3: Aggregated Edit (Department + Year)**
+```json
+{
+  "client_id": "spanx",
+  "kpi": "Sls U",
+  "new_value": 500000,
+  "dept": "Electronics",
+  "time_level": "year",
+  "year": 2024
+}
+```
+→ Edit all Electronics products, all weeks in 2024 (uses historical allocation)
 
 ---
 
-## 🗂️ KPI CONFIG STRUCTURE
+## 🗂️ CLIENT CONFIG STRUCTURE
 
-### Config File: `configs/spanx.json`
+### Location
+
+```
+configs/
+├── spanx.json
+├── client2.json
+└── example.json
+```
+
+Each client has a separate config file defining their KPIs, formulas, and handlers.
+
+### Config Schema
 
 ```json
 {
@@ -201,7 +344,6 @@ Build a **Python FastAPI service** that generates SQL workflow JSON from client-
         }
       }
     },
-
     {
       "name": "COGS",
       "display_name": "Cost of Goods Sold",
@@ -211,13 +353,12 @@ Build a **Python FastAPI service** that generates SQL workflow JSON from client-
       "depends_on": ["Sls U", "AUC"],
       "locks_when_edited": []
     },
-
     {
       "name": "EOP U",
       "display_name": "End of Period Units",
       "is_editable": false,
       "handler_type": "custom",
-      "custom_handler": "eop_bop_handler",
+      "custom_handler": "spanx_eop_bop_handler",
       "handler_params": {
         "offset": 1,
         "target_kpi": "BOP U"
@@ -225,13 +366,12 @@ Build a **Python FastAPI service** that generates SQL workflow JSON from client-
       "depends_on": ["BOP U", "Sls U", "Total Rcpt U", "Return Inv"],
       "locks_when_edited": []
     },
-
     {
       "name": "FWOS",
       "display_name": "Forward Weeks of Supply",
       "is_editable": false,
       "handler_type": "custom",
-      "custom_handler": "forward_weeks_of_supply_handler",
+      "custom_handler": "spanx_fwos_handler",
       "handler_params": {
         "number_of_weeks": 6
       },
@@ -242,44 +382,68 @@ Build a **Python FastAPI service** that generates SQL workflow JSON from client-
 }
 ```
 
-### Key Fields
+### Key Config Fields
 
-| Field | Description |
-|-------|-------------|
-| `handler_type` | "linear" (formula-based) or "custom" (Python function) |
-| `formula` | For linear: SQL expression like "Sls U * AUC" |
-| `custom_handler` | For custom: Python function name like "eop_bop_handler" |
-| `handler_params` | For custom: Static params passed to function |
-| `depends_on` | KPIs this depends on (for topological sort) |
-| `locks_when_edited` | KPIs to lock when this is edited |
-| `allocation_strategy` | How to distribute aggregated edits |
+| Field | Description | Example |
+|-------|-------------|---------|
+| `granularity` | Storage grain (unique key) | `["product_id", "week", "year"]` |
+| `handler_type` | "linear" or "custom" | `"linear"` |
+| `formula` | For linear: SQL expression | `"Sls U * AUC"` |
+| `custom_handler` | For custom: Python function name | `"spanx_fwos_handler"` |
+| `handler_params` | Static params for custom handler | `{"number_of_weeks": 6}` |
+| `depends_on` | KPIs this depends on (for topological sort) | `["Sls U", "AUC"]` |
+| `locks_when_edited` | KPIs to lock when this is edited | `["DR%"]` |
+| `allocation_strategy` | How to distribute aggregated edits | See allocation section |
+
+### Why Granularity is Config-Only
+
+**Granularity defines the storage schema** - it's where data lives, not where users edit.
+
+**Usage:**
+1. **Weight calculation:** `SELECT product_id, week, year, weight FROM ...`
+2. **Delta application:** `UPDATE ... WHERE (product_id, week, year) IN (...)`
+3. **Multi-week joins:** `WHERE source.product_id = target.product_id AND source.week = target.week - 1`
+
+**Never from frontend** because:
+- It's a database property, not an edit property
+- User edits at aggregation level (dept-month)
+- System distributes to storage level (product-week)
+- They're different things!
 
 ---
 
 ## 🔧 CUSTOM HANDLERS
 
+### Purpose
+
+Custom handlers implement complex KPI logic that can't be expressed as simple formulas:
+- Multi-week effects (EOP → BOP transitions)
+- Lookback calculations (FWOS, rolling averages)
+- Delayed effects (return inventory with 4-week delay)
+- Client-specific business rules
+
 ### Handler Interface
 
 ```python
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 def custom_handler_interface(
     kpi_name: str,
     kpi_config: Dict[str, Any],
     handler_params: Dict[str, Any],
-    filters: str,  # WHERE clause from edit payload
+    filters: str,
     granularity: List[str],
     database: str,
     table: str
 ) -> str:
     """
-    Returns SQL query for this KPI.
+    Returns SQL UPDATE statement for this KPI.
 
     Args:
         kpi_name: "EOP U", "FWOS", etc.
         kpi_config: Full KPI config dict
-        handler_params: Static params from config
-        filters: WHERE clause (e.g., "product_id = 'PROD-001' AND week = 10")
+        handler_params: Static params from config (e.g., {"number_of_weeks": 6})
+        filters: WHERE clause from edit (e.g., "product_id = 'PROD-001' AND week = 10")
         granularity: ["product_id", "week", "year"]
         database: "spanx_kpi_data"
         table: "kpi_data"
@@ -290,54 +454,27 @@ def custom_handler_interface(
     pass
 ```
 
-### Example 1: EOP → BOP Handler
+### Directory Structure (Client-Specific)
 
-```python
-def eop_bop_handler(
-    kpi_name: str,
-    kpi_config: Dict[str, Any],
-    handler_params: Dict[str, Any],
-    filters: str,
-    granularity: List[str],
-    database: str,
-    table: str
-) -> str:
-    """
-    EOP U (Week N) → BOP U (Week N+1)
-
-    Formula: EOP U = BOP U - Sls U + Total Rcpt U + Return Inv
-    """
-
-    if kpi_name == "EOP U":
-        sql = f"""
-        ALTER TABLE {database}.{table}
-        UPDATE eop_u = bop_u - sls_u + total_rcpt_u + return_inv
-        WHERE {filters}
-        """
-        return sql.strip()
-
-    elif kpi_name == "BOP U":
-        # Next week's BOP = this week's EOP
-        offset = handler_params.get("offset", 1)
-        sql = f"""
-        ALTER TABLE {database}.{table} AS target
-        UPDATE bop_u = (
-            SELECT eop_u
-            FROM {database}.{table} AS source
-            WHERE source.product_id = target.product_id
-              AND source.week = target.week - {offset}
-              AND source.year = target.year
-        )
-        WHERE target.week > (SELECT MIN(week) FROM {database}.{table} WHERE {filters})
-          AND {filters}
-        """
-        return sql.strip()
+```
+app/engine/custom_handlers/
+├── spanx/
+│   ├── __init__.py
+│   ├── spanx_fwos_handler.py
+│   ├── spanx_eop_bop_handler.py
+│   └── spanx_return_inv_handler.py
+├── client2/
+│   ├── __init__.py
+│   └── client2_custom_handler.py
+└── registry.py  # Maps handler names to functions
 ```
 
-### Example 2: FWOS Handler
+### Example 1: FWOS Handler
+
+**Business Logic:** FWOS = End of Period Units / (average Sales Units over next N weeks)
 
 ```python
-def forward_weeks_of_supply_handler(
+def spanx_fwos_handler(
     kpi_name: str,
     kpi_config: Dict[str, Any],
     handler_params: Dict[str, Any],
@@ -347,9 +484,9 @@ def forward_weeks_of_supply_handler(
     table: str
 ) -> str:
     """
-    FWOS = EOP U / (average Sls U over next N weeks)
+    Forward Weeks of Supply calculation.
+    FWOS = EOP U / AVG(Sls U over next N weeks)
     """
-
     number_of_weeks = handler_params.get("number_of_weeks", 6)
 
     sql = f"""
@@ -367,10 +504,12 @@ def forward_weeks_of_supply_handler(
     return sql.strip()
 ```
 
-### Example 3: Return Inventory Handler (4-week delay)
+### Example 2: EOP → BOP Handler
+
+**Business Logic:** This week's EOP becomes next week's BOP (inventory transition)
 
 ```python
-def return_inventory_handler(
+def spanx_eop_bop_handler(
     kpi_name: str,
     kpi_config: Dict[str, Any],
     handler_params: Dict[str, Any],
@@ -380,9 +519,57 @@ def return_inventory_handler(
     table: str
 ) -> str:
     """
+    EOP to BOP transition handler.
+
+    EOP U = BOP U - Sls U + Total Rcpt U + Return Inv
+    BOP U (Week N) = EOP U (Week N-1)
+    """
+    if kpi_name == "EOP U":
+        # Calculate EOP from formula
+        sql = f"""
+        ALTER TABLE {database}.{table}
+        UPDATE eop_u = bop_u - sls_u + total_rcpt_u + return_inv
+        WHERE {filters}
+        """
+
+    elif kpi_name == "BOP U":
+        # Next week's BOP = this week's EOP
+        offset = handler_params.get("offset", 1)
+        sql = f"""
+        ALTER TABLE {database}.{table} AS target
+        UPDATE bop_u = (
+            SELECT eop_u
+            FROM {database}.{table} AS source
+            WHERE source.product_id = target.product_id
+              AND source.week = target.week - {offset}
+              AND source.year = target.year
+        )
+        WHERE target.week > (
+            SELECT MIN(week) FROM {database}.{table} WHERE {filters}
+        )
+        """
+
+    return sql.strip()
+```
+
+### Example 3: Return Inventory Handler (4-week delay)
+
+**Business Logic:** Returns from Week N become inventory in Week N+4 (with 10% damage)
+
+```python
+def spanx_return_inv_handler(
+    kpi_name: str,
+    kpi_config: Dict[str, Any],
+    handler_params: Dict[str, Any],
+    filters: str,
+    granularity: List[str],
+    database: str,
+    table: str
+) -> str:
+    """
+    Return Inventory with delay and damage factor.
     Return Inv (Week N+4) = Return U (Week N) * (1 - damage_rate)
     """
-
     offset = handler_params.get("offset", 4)
     damage_rate = handler_params.get("damage_rate", 0.1)
 
@@ -401,33 +588,95 @@ def return_inventory_handler(
     return sql.strip()
 ```
 
+### Handler Registry
+
+**File:** `app/engine/custom_handlers/registry.py`
+
+```python
+from typing import Dict, Callable
+from app.engine.custom_handlers.spanx.spanx_fwos_handler import spanx_fwos_handler
+from app.engine.custom_handlers.spanx.spanx_eop_bop_handler import spanx_eop_bop_handler
+from app.engine.custom_handlers.spanx.spanx_return_inv_handler import spanx_return_inv_handler
+
+# Handler type signature
+HandlerFunction = Callable[[str, Dict, Dict, str, list, str, str], str]
+
+# Registry maps handler names to functions
+CUSTOM_HANDLERS: Dict[str, HandlerFunction] = {
+    "spanx_fwos_handler": spanx_fwos_handler,
+    "spanx_eop_bop_handler": spanx_eop_bop_handler,
+    "spanx_return_inv_handler": spanx_return_inv_handler,
+    # Add more client handlers here
+}
+
+def get_handler(handler_name: str) -> HandlerFunction:
+    """Get custom handler by name."""
+    if handler_name not in CUSTOM_HANDLERS:
+        raise ValueError(f"Unknown custom handler: {handler_name}")
+    return CUSTOM_HANDLERS[handler_name]
+```
+
 ---
 
-## 🏗️ CORE ARCHITECTURE
+## 📤 OUTPUT: WORKFLOW JSON
 
-### Service Flow
+### Structure
 
+```json
+{
+  "workflow_id": "spanx_edit_Sls_U_1234567890",
+  "client_id": "spanx",
+  "description": "Edit Sls U for PROD-001, Week 10, 2024",
+  "steps": [
+    {
+      "step_id": "step_1_apply_edit",
+      "description": "Apply user edit to Sls U",
+      "sql": "ALTER TABLE spanx_kpi_data.kpi_data UPDATE sls_u = 150 WHERE product_id = 'PROD-001' AND week = 10 AND year = 2024",
+      "dependencies": [],
+      "cleanup": false
+    },
+    {
+      "step_id": "step_2_recalc_cogs",
+      "description": "Recalculate COGS (linear)",
+      "sql": "ALTER TABLE spanx_kpi_data.kpi_data UPDATE cogs = sls_u * auc WHERE product_id = 'PROD-001' AND week = 10 AND year = 2024",
+      "dependencies": ["step_1_apply_edit"],
+      "cleanup": false
+    },
+    {
+      "step_id": "step_3_recalc_eop_u",
+      "description": "Recalculate EOP U (custom handler)",
+      "sql": "ALTER TABLE spanx_kpi_data.kpi_data UPDATE eop_u = bop_u - sls_u + total_rcpt_u + return_inv WHERE product_id = 'PROD-001' AND week = 10 AND year = 2024",
+      "dependencies": ["step_1_apply_edit"],
+      "cleanup": false
+    },
+    {
+      "step_id": "step_4_recalc_bop_u_next_week",
+      "description": "Update next week's BOP U (multi-week effect)",
+      "sql": "ALTER TABLE spanx_kpi_data.kpi_data AS target UPDATE bop_u = (SELECT eop_u FROM spanx_kpi_data.kpi_data AS source WHERE source.product_id = target.product_id AND source.week = 10 AND source.year = 2024) WHERE product_id = 'PROD-001' AND week = 11 AND year = 2024",
+      "dependencies": ["step_3_recalc_eop_u"],
+      "cleanup": false
+    }
+  ],
+  "metadata": {
+    "execution_mode": "clickhouse",
+    "max_parallel_steps": 4,
+    "timeout_seconds": 300,
+    "edit_type": "single"
+  }
+}
 ```
-1. POST /generate-workflow
-   ↓
-2. Load client config (configs/spanx.json)
-   ↓
-3. Parse edit payload (single or aggregated)
-   ↓
-4. Get edited KPI config
-   ↓
-5. Get lock strategy
-   ↓
-6. Topological sort → calculation order
-   ↓
-7. For each affected KPI:
-   ├─ If linear: Generate SQL from formula
-   └─ If custom: Call handler function → get SQL
-   ↓
-8. Build workflow JSON with all steps
-   ↓
-9. Return workflow JSON
-```
+
+### Workflow Execution
+
+The workflow JSON is returned to the caller (frontend or orchestration system). **This service does NOT execute the workflow** - that's the responsibility of an external system like:
+- Airflow
+- Dagster
+- Prefect
+- Custom execution engine
+
+---
+
+## 🏗️ SERVICE ARCHITECTURE
 
 ### Directory Structure
 
@@ -435,30 +684,38 @@ def return_inventory_handler(
 kpi-workflow-generator/
 ├── app/
 │   ├── main.py                      # FastAPI app
-│   ├── config.py                    # Settings
+│   ├── config.py                    # Settings (env vars)
 │   │
 │   ├── models/
-│   │   ├── edit_payload.py          # SingleEdit, AggregatedEdit
+│   │   ├── __init__.py
+│   │   ├── payload.py               # EditPayload (unified)
 │   │   ├── kpi_config.py            # KPIConfig, ClientConfig
 │   │   ├── workflow.py              # WorkflowDefinition, WorkflowStep
-│   │   └── aggregation.py           # AggregationContext
+│   │   └── enums.py                 # HandlerType, AllocationStrategy, etc.
 │   │
 │   ├── services/
+│   │   ├── __init__.py
 │   │   ├── workflow_generator.py    # Main workflow builder
-│   │   ├── config_loader.py         # Load client configs
+│   │   ├── config_loader.py         # Load/cache client configs
 │   │   └── sql_builder.py           # SQL generation utilities
 │   │
 │   ├── engine/
+│   │   ├── __init__.py
 │   │   ├── topological_sort.py      # Kahn's algorithm
 │   │   ├── formula_evaluator.py     # Convert formulas to SQL
 │   │   └── custom_handlers/
 │   │       ├── __init__.py
-│   │       ├── eop_bop.py           # EOP/BOP handler
-│   │       ├── fwos.py              # FWOS handler
-│   │       ├── return_inventory.py  # Return inv handler
-│   │       └── registry.py          # Handler registry
+│   │       ├── registry.py          # Handler registry
+│   │       ├── spanx/
+│   │       │   ├── __init__.py
+│   │       │   ├── spanx_fwos_handler.py
+│   │       │   ├── spanx_eop_bop_handler.py
+│   │       │   └── spanx_return_inv_handler.py
+│   │       └── client2/
+│   │           └── ...
 │   │
 │   └── allocation/
+│       ├── __init__.py
 │       ├── pro_rata.py              # Pro-rata SQL generator
 │       ├── equal.py                 # Equal SQL generator
 │       ├── historical.py            # Historical SQL generator
@@ -470,27 +727,84 @@ kpi-workflow-generator/
 │   └── example.json
 │
 ├── tests/
-│   ├── test_topological_sort.py
-│   ├── test_workflow_single.py
-│   ├── test_workflow_aggregated.py
-│   └── test_custom_handlers.py
+│   ├── __init__.py
+│   ├── conftest.py                  # Pytest fixtures
+│   ├── unit/
+│   │   ├── test_topological_sort.py
+│   │   ├── test_formula_evaluator.py
+│   │   ├── test_allocation.py
+│   │   └── test_custom_handlers.py
+│   ├── integration/
+│   │   ├── test_workflow_single.py
+│   │   ├── test_workflow_aggregated.py
+│   │   └── test_multi_week.py
+│   └── api/
+│       └── test_generate_workflow.py
 │
 ├── requirements.txt
 ├── Dockerfile
+├── docker-compose.yml
 └── README.md
+```
+
+### Service Flow
+
+```
+POST /generate-workflow
+    ↓
+1. Parse payload (Pydantic validation)
+    ↓
+2. Load client config from configs/{client_id}.json
+    ↓
+3. Detect edit type:
+   - Has all granularity? → SINGLE
+   - Missing granularity? → AGGREGATED
+    ↓
+4. Build WHERE clause from payload filters
+    ↓
+5. Get edited KPI config
+    ↓
+6. Get lock strategy (which KPIs to lock)
+    ↓
+7. Topological sort (calculate dependency order)
+    ↓
+8. Generate workflow steps:
+   │
+   ├─ Single edit:
+   │  ├─ Step 1: Direct UPDATE for edited KPI
+   │  └─ Steps 2+: Recalculate dependent KPIs
+   │
+   └─ Aggregated edit:
+      ├─ Step 1: Calculate current aggregate
+      ├─ Step 2: Calculate weights (allocation strategy)
+      ├─ Step 3: Calculate deltas
+      ├─ Step 4: Apply deltas to edited KPI
+      └─ Steps 5+: Recalculate dependent KPIs
+    ↓
+9. For each dependent KPI:
+   │
+   ├─ Linear handler?
+   │  └─ formula_to_sql(formula, filters) → SQL
+   │
+   └─ Custom handler?
+      └─ get_handler(name)(params, filters) → SQL
+    ↓
+10. Build workflow JSON with dependencies
+    ↓
+11. Return workflow JSON
 ```
 
 ---
 
 ## 🔑 KEY COMPONENTS
 
-### 1. Workflow Generator Service
+### 1. Workflow Generator
 
 **File:** `app/services/workflow_generator.py`
 
 ```python
 from typing import Dict, Any, List
-from app.models.edit_payload import SingleEdit, AggregatedEdit
+from app.models.payload import EditPayload
 from app.models.kpi_config import ClientConfig
 from app.models.workflow import WorkflowDefinition, WorkflowStep
 from app.engine.topological_sort import topological_sort
@@ -500,38 +814,50 @@ class WorkflowGenerator:
         self.config = client_config
         self.kpi_map = {kpi.name: kpi for kpi in client_config.kpis}
 
-    def generate(self, payload: SingleEdit | AggregatedEdit) -> WorkflowDefinition:
+    def generate(self, payload: EditPayload) -> WorkflowDefinition:
         """Main entry point for workflow generation."""
 
-        if isinstance(payload, SingleEdit):
-            return self._generate_single_edit_workflow(payload)
-        else:
-            return self._generate_aggregated_edit_workflow(payload)
+        # Detect edit type
+        edit_type = self._detect_edit_type(payload)
 
-    def _generate_single_edit_workflow(self, payload: SingleEdit) -> WorkflowDefinition:
+        if edit_type == "single":
+            return self._generate_single_workflow(payload)
+        else:
+            return self._generate_aggregated_workflow(payload)
+
+    def _detect_edit_type(self, payload: EditPayload) -> str:
+        """Auto-detect single vs aggregated based on granularity."""
+        has_all_granularity = all(
+            hasattr(payload, col) and getattr(payload, col) is not None
+            for col in self.config.granularity
+        )
+        return "single" if has_all_granularity else "aggregated"
+
+    def _generate_single_workflow(self, payload: EditPayload) -> WorkflowDefinition:
         """
-        Generate workflow for single product-week edit.
+        Generate workflow for single edit.
 
         Steps:
-        1. Apply direct edit (UPDATE kpi_data SET kpi = value WHERE ...)
-        2. Get affected KPIs (topological sort)
+        1. Direct UPDATE for edited KPI
+        2. Topological sort → get dependent KPIs
         3. For each KPI: generate SQL (linear or custom)
-        4. Handle multi-week effects (EOP→BOP, returns)
+        4. Handle multi-week effects
         """
         pass
 
-    def _generate_aggregated_edit_workflow(self, payload: AggregatedEdit) -> WorkflowDefinition:
+    def _generate_aggregated_workflow(self, payload: EditPayload) -> WorkflowDefinition:
         """
-        Generate workflow for aggregated edit with allocation.
+        Generate workflow for aggregated edit.
 
         Steps:
         1. Calculate current aggregate
-        2. Calculate weights (using allocation strategy)
-        3. Calculate deltas
-        4. Apply deltas
-        5. Validate (optional)
-        6. Recalculate dependent KPIs
-        7. Handle multi-week effects
+        2. Get allocation strategy from KPI config
+        3. Generate weight calculation SQL
+        4. Generate delta calculation SQL
+        5. Apply deltas
+        6. Validate (optional)
+        7. Recalculate dependent KPIs
+        8. Handle multi-week effects
         """
         pass
 ```
@@ -556,9 +882,9 @@ def topological_sort(
 
     Example:
         [
-            ["AUR", "COGS", "Return U"],  # Level 1
-            ["GM $", "Net Sls U"],         # Level 2
-            ["GM %", "EOP U"]              # Level 3
+            ["AUR", "COGS", "Return U"],  # Level 1 (can run in parallel)
+            ["GM $", "Net Sls U"],         # Level 2 (depends on level 1)
+            ["GM %", "EOP U"]              # Level 3 (depends on level 2)
         ]
     """
 
@@ -631,13 +957,15 @@ def formula_to_sql(
 
     Example:
         formula = "Sls $ / Sls U"
-        →
-        "ALTER TABLE db.table UPDATE aur = sls_dollars / sls_u WHERE ..."
+        → "ALTER TABLE db.table UPDATE aur = sls_dollars / sls_u WHERE ..."
     """
 
-    # Map KPI names to column names (spaces → underscores, lowercase)
+    # Map KPI names to column names
     def kpi_to_column(kpi: str) -> str:
-        return kpi.lower().replace(' ', '_').replace('%', 'percent').replace('$', 'dollars')
+        return (kpi.lower()
+                .replace(' ', '_')
+                .replace('%', 'percent')
+                .replace('$', 'dollars'))
 
     # Replace KPI names with column names
     sql_expression = formula
@@ -660,178 +988,116 @@ def formula_to_sql(
     return sql.strip()
 ```
 
-### 4. Custom Handler Registry
+### 4. SQL Expression Generator (Backend)
 
-**File:** `app/engine/custom_handlers/registry.py`
-
-```python
-from typing import Dict, Callable
-from app.engine.custom_handlers.eop_bop import eop_bop_handler
-from app.engine.custom_handlers.fwos import forward_weeks_of_supply_handler
-from app.engine.custom_handlers.return_inventory import return_inventory_handler
-
-# Handler type signature
-HandlerFunction = Callable[[str, Dict, Dict, str, list, str, str], str]
-
-# Registry of all custom handlers
-CUSTOM_HANDLERS: Dict[str, HandlerFunction] = {
-    "eop_bop_handler": eop_bop_handler,
-    "forward_weeks_of_supply_handler": forward_weeks_of_supply_handler,
-    "return_inventory_handler": return_inventory_handler,
-}
-
-def get_handler(handler_name: str) -> HandlerFunction:
-    """Get custom handler by name."""
-    if handler_name not in CUSTOM_HANDLERS:
-        raise ValueError(f"Unknown custom handler: {handler_name}")
-    return CUSTOM_HANDLERS[handler_name]
-```
-
-### 5. Allocation Strategy
-
-**File:** `app/allocation/pro_rata.py`
+**File:** `app/services/sql_builder.py`
 
 ```python
-def generate_pro_rata_sql(
-    kpi_column: str,
-    aggregation_context: Dict,
-    database: str,
-    table: str
-) -> str:
+def generate_time_sql_expression(time_level: str) -> str:
     """
-    Generate SQL for pro-rata allocation.
+    Generate SQL expression for time aggregation based on level.
 
-    Weight = current_value / SUM(current_value)
+    Frontend sends time_level, backend generates SQL.
     """
-
-    where = aggregation_context["where"]
-    granularity = aggregation_context["granularity"]
-    granularity_cols = ", ".join(granularity)
-
-    sql = f"""
-    WITH granular_values AS (
-        SELECT
-            {granularity_cols},
-            {kpi_column} as current_value
-        FROM {database}.{table}
-        WHERE {where}
-    ),
-    totals AS (
-        SELECT SUM(current_value) as total_value
-        FROM granular_values
-    )
-    SELECT
-        g.{granularity_cols.replace(', ', ', g.')},
-        g.current_value / t.total_value as weight
-    FROM granular_values g
-    CROSS JOIN totals t
-    """
-
-    return sql.strip()
-```
-
----
-
-## 🔌 API ENDPOINT (Just One!)
-
-### POST `/generate-workflow`
-
-**Request:**
-```json
-{
-  "client_id": "spanx",
-  "edit_type": "single",
-  "product_id": "PROD-001",
-  "week": 10,
-  "year": 2024,
-  "kpi": "Sls U",
-  "new_value": 150
-}
-```
-
-**Response:**
-```json
-{
-  "workflow_id": "spanx_edit_Sls_U_1234567890",
-  "client_id": "spanx",
-  "description": "Edit Sls U for PROD-001, Week 10, 2024",
-  "steps": [
-    {
-      "step_id": "step_1_apply_edit",
-      "description": "Apply user edit to Sls U",
-      "sql": "ALTER TABLE spanx_kpi_data.kpi_data UPDATE sls_u = 150 WHERE product_id = 'PROD-001' AND week = 10 AND year = 2024",
-      "dependencies": [],
-      "cleanup": false
-    },
-    {
-      "step_id": "step_2_recalc_cogs",
-      "description": "Recalculate COGS",
-      "sql": "ALTER TABLE spanx_kpi_data.kpi_data UPDATE cogs = sls_u * auc WHERE product_id = 'PROD-001' AND week = 10 AND year = 2024",
-      "dependencies": ["step_1_apply_edit"],
-      "cleanup": false
-    },
-    {
-      "step_id": "step_3_recalc_eop_u",
-      "description": "Recalculate EOP U",
-      "sql": "ALTER TABLE spanx_kpi_data.kpi_data UPDATE eop_u = bop_u - sls_u + total_rcpt_u + return_inv WHERE product_id = 'PROD-001' AND week = 10 AND year = 2024",
-      "dependencies": ["step_1_apply_edit"],
-      "cleanup": false
+    expressions = {
+        "week": "week",
+        "month": "toMonth(toDate(year, 1, 1) + toIntervalWeek(week))",
+        "quarter": "toQuarter(toDate(year, 1, 1) + toIntervalWeek(week))",
+        "year": "year"
     }
-  ],
-  "metadata": {
-    "execution_mode": "clickhouse",
-    "max_parallel_steps": 4,
-    "timeout_seconds": 300
-  }
-}
+
+    if time_level not in expressions:
+        raise ValueError(f"Unknown time level: {time_level}")
+
+    return expressions[time_level]
+
+def build_where_clause(payload: dict, client_config: dict) -> str:
+    """
+    Build WHERE clause from payload filters.
+
+    Handles both single and aggregated edits.
+    """
+    filters = []
+
+    # Granularity filters (for single edits)
+    for col in client_config["granularity"]:
+        if col in payload and payload[col] is not None:
+            filters.append(f"{col} = '{payload[col]}'")
+
+    # Hierarchy filters (for aggregated edits)
+    if "dept" in payload:
+        filters.append(f"dept = '{payload['dept']}'")
+    if "subdept" in payload:
+        filters.append(f"subdept = '{payload['subdept']}'")
+
+    # Time filters (for aggregated edits)
+    if "time_level" in payload and "time_value" in payload:
+        time_sql = generate_time_sql_expression(payload["time_level"])
+        filters.append(f"{time_sql} = {payload['time_value']}")
+
+    # Year filter (always present)
+    if "year" in payload:
+        filters.append(f"year = {payload['year']}")
+
+    return " AND ".join(filters)
 ```
 
 ---
 
 ## 📝 IMPLEMENTATION PLAN
 
-### Phase 1: Foundation (Day 1)
-1. Set up FastAPI project
+### Phase 1: Foundation (Days 1-2)
+1. Set up FastAPI project structure
 2. Define Pydantic models (EditPayload, KPIConfig, WorkflowDefinition)
-3. Create config loader (read JSON files)
+3. Create config loader (read JSON, cache in memory)
+4. Write unit tests for models
 
-### Phase 2: Topological Sort (Day 2)
-4. Implement Kahn's algorithm
-5. Add cycle detection
-6. Write unit tests
-
-### Phase 3: Linear Cases (Day 3)
+### Phase 2: Core Engine (Days 3-4)
+5. Implement topological sort (Kahn's algorithm)
+6. Add cycle detection
 7. Implement formula-to-SQL converter
-8. Test with simple formulas (AUR, COGS, GM$)
+8. Write unit tests
 
-### Phase 4: Custom Handlers (Day 4-5)
+### Phase 3: Custom Handlers (Days 5-6)
 9. Create handler registry
-10. Implement EOP/BOP handler
-11. Implement FWOS handler
-12. Implement return inventory handler
-13. Test each handler
+10. Implement example handlers for Spanx:
+    - FWOS handler
+    - EOP/BOP handler
+    - Return inventory handler
+11. Write unit tests for each handler
 
-### Phase 5: Workflow Generator (Day 6-7)
-14. Implement single edit workflow generation
-15. Implement aggregated edit workflow generation
-16. Add allocation strategy SQL generation
-17. Integration tests
+### Phase 4: Workflow Generator (Days 7-9)
+12. Implement single edit workflow generation
+13. Implement aggregated edit workflow generation
+14. Implement allocation strategy SQL generators
+15. Add WHERE clause builder
+16. Add time SQL expression generator
+17. Write integration tests
 
-### Phase 6: API & Testing (Day 8)
+### Phase 5: API & Testing (Days 10-11)
 18. Add FastAPI endpoint
-19. End-to-end tests
-20. Documentation
+19. Add error handling and validation
+20. End-to-end tests
+21. API tests with various payloads
+
+### Phase 6: Documentation (Day 12)
+22. API documentation (OpenAPI/Swagger)
+23. README with examples
+24. Deployment guide
 
 ---
 
 ## ✅ SUCCESS CRITERIA
 
 - [ ] Single edit generates correct workflow JSON
-- [ ] Aggregated edit generates correct workflow JSON with allocation
+- [ ] Aggregated edit generates correct workflow JSON
+- [ ] Auto-detection works (single vs aggregated)
 - [ ] Topological sort handles dependencies correctly
 - [ ] Linear formulas convert to SQL correctly
 - [ ] Custom handlers generate correct SQL
-- [ ] Custom handlers accept parameters from config
+- [ ] Custom handlers accept params from config
+- [ ] Time SQL expressions generated correctly (backend)
+- [ ] WHERE clause built correctly from payload
 - [ ] Multiple clients supported (separate configs)
 - [ ] No cycles in dependency graph
 - [ ] 80%+ test coverage
@@ -853,10 +1119,10 @@ source venv/bin/activate
 pip install fastapi uvicorn pydantic
 
 # 4. Create structure
-mkdir -p app/{models,services,engine/custom_handlers,allocation}
-mkdir -p configs tests
+mkdir -p app/{models,services,engine/custom_handlers/spanx,allocation}
+mkdir -p configs tests/{unit,integration,api}
 
-# 5. Create first config
+# 5. Create example config
 cat > configs/spanx.json << 'EOF'
 {
   "client_id": "spanx",
@@ -872,20 +1138,84 @@ EOF
 
 ---
 
-## 🎯 FOCUS AREAS
+## 🎯 WHAT THIS IS (AND ISN'T)
 
-**This is NOT about:**
-- Building a full CRUD API
-- Managing database connections
+### ✅ What We're Building
+
+- Workflow generator service
+- Config-driven KPI system
+- SQL workflow JSON output
+- Topological dependency ordering
+- Auto-detection (single vs aggregated)
+- Client-specific custom handlers
+- Allocation strategy SQL generation
+
+### ❌ What We're NOT Building
+
+- Full CRUD API with 20+ endpoints
+- Database connection management
+- Workflow execution engine
 - User authentication
 - Direct data manipulation
+- Monitoring, caching, rate limiting
+- Frontend application
 
-**This IS about:**
-- Reading edit payloads
-- Reading client configs
-- Generating workflow JSON
-- Converting formulas to SQL
-- Calling custom handler functions
-- Topological dependency ordering
+---
 
-Keep it focused! 🎯
+## 📚 REFERENCE FILES
+
+Study these TypeScript files from the POC to understand the business logic:
+
+1. **`kpi-poc/src/types.ts`** (157 lines)
+   - All type definitions
+   - Port to Pydantic models
+
+2. **`kpi-poc/src/engine/KPIEngine.ts`** (350 lines)
+   - Main rebalancing algorithm
+   - Study the flow, don't port directly (we're generating SQL, not executing)
+
+3. **`kpi-poc/src/engine/topologicalSort.ts`** (161 lines)
+   - Kahn's algorithm implementation
+   - Port directly to Python
+
+4. **`kpi-poc/src/engine/formulas.ts`** (112 lines)
+   - Formula evaluation logic
+   - Port the concept (formula → SQL)
+
+5. **`kpi-poc/src/data/kpiConfig.ts`** (270 lines)
+   - All 29 KPI definitions
+   - Convert to JSON format for configs/
+
+6. **`kpi-poc/src/workflows/workflowGenerator.ts`** (500+ lines)
+   - Workflow generation logic
+   - Study for SQL generation patterns
+
+---
+
+## 🔍 KEY INSIGHTS
+
+1. **Granularity is storage-level, not edit-level**
+   - User edits: (dept, month)
+   - Data stored: (product_id, week, year)
+   - We distribute from edit → storage
+
+2. **Backend generates SQL, not frontend**
+   - Frontend sends: `time_level: "month"`
+   - Backend generates: `toMonth(toDate(year, 1, 1) + toIntervalWeek(week))`
+
+3. **One endpoint, auto-detection**
+   - Has all granularity columns? → Single
+   - Missing granularity? → Aggregated
+
+4. **Client-specific everything**
+   - Separate config files per client
+   - Separate handler directories per client
+   - One codebase serves all clients
+
+5. **We generate workflows, don't execute them**
+   - Output: JSON with SQL steps
+   - External system executes (Airflow, Dagster, etc.)
+
+---
+
+Keep it focused on workflow generation! 🎯
