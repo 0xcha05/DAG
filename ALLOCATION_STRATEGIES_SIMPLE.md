@@ -860,19 +860,17 @@ WHERE dept = 'Electronics'
 
 ## ⚙️ Config-Driven Architecture
 
-### Why Config-Driven Matters
+### Strategy Resolution
 
-The allocation strategy is **NOT hardcoded** in the application. Instead, it's defined **per KPI** in the client configuration file.
+Allocation strategies are resolved at runtime from client configuration. No hardcoded strategy selection in application code.
 
-**Benefits:**
-- ✅ Different KPIs can use different strategies
-- ✅ Change strategy without code changes
-- ✅ Client-specific business rules
-- ✅ Easy to test and iterate
+```
+allocation_strategy = resolve_from_config(kpi_name, client_id)
+```
 
-### KPI Configuration Structure
+### Configuration Schema
 
-**File:** `configs/spanx/kpi_config.json`
+**File:** `configs/{client_id}/kpi_config.json`
 
 ```json
 {
@@ -923,440 +921,192 @@ The allocation strategy is **NOT hardcoded** in the application. Instead, it's d
 }
 ```
 
-### Config Breakdown
-
-**For "Sls U" (Established Products):**
-```json
-"allocation_strategy": {
-  "default": {
-    "strategy": "pro_rata"
-  }
-}
-```
-
-**Meaning:** When a user edits Sls U at an aggregated level, use **pro-rata** allocation to preserve existing product mix.
-
-**For "New Product Forecast":**
-```json
-"allocation_strategy": {
-  "default": {
-    "strategy": "equal"
-  }
-}
-```
-
-**Meaning:** When a user edits new product forecasts at an aggregated level, use **equal** distribution since there's no historical pattern to preserve.
-
-### How the Workflow Generator Uses Config
-
-**Step-by-Step Flow:**
+### Strategy Lookup Algorithm
 
 ```python
 def generate_aggregated_workflow(payload: dict, client_config: dict):
-    """
-    Generate workflow for aggregated edit using config.
-    """
-
-    # 1. Extract KPI name from payload
+    # Extract KPI identifier
     kpi_name = payload["kpi"]
-    # Example: "Sls U"
 
-    # 2. Find KPI config
-    kpi_config = None
-    for kpi in client_config["kpis"]:
-        if kpi["name"] == kpi_name:
-            kpi_config = kpi
-            break
+    # Resolve KPI config
+    kpi_config = lookup_kpi_config(client_config["kpis"], kpi_name)
+    if not kpi_config:
+        raise ConfigError(f"KPI '{kpi_name}' not found")
 
-    if kpi_config is None:
-        raise ValueError(f"KPI '{kpi_name}' not found in config")
+    # Resolve strategy with fallback chain
+    strategy = kpi_config
+                .get("allocation_strategy", {})
+                .get("default", {})
+                .get("strategy", "pro_rata")
 
-    # 3. Read allocation strategy from config
-    allocation_config = kpi_config.get("allocation_strategy", {})
-    default_strategy = allocation_config.get("default", {})
-    strategy = default_strategy.get("strategy", "pro_rata")  # Default to pro_rata if not specified
-
-    print(f"Using strategy: {strategy}")
-    # Output: "Using strategy: pro_rata"
-
-    # 4. Build WHERE clause from payload
+    # Generate WHERE clause from payload filters
     where_clause = build_where_clause(payload, client_config)
 
-    # 5. Generate SQL based on config strategy
-    if strategy == "pro_rata":
-        allocation_sql = generate_pro_rata_sql(
-            kpi_column=kpi_name.lower().replace(" ", "_"),
-            granularity=client_config["granularity"],
-            where_clause=where_clause,
-            database=client_config["database"],
-            table=client_config["data_table"],
-            new_value=payload["new_value"]
-        )
-    elif strategy == "equal":
-        allocation_sql = generate_equal_sql(
-            kpi_column=kpi_name.lower().replace(" ", "_"),
-            granularity=client_config["granularity"],
-            where_clause=where_clause,
-            database=client_config["database"],
-            table=client_config["data_table"],
-            new_value=payload["new_value"]
-        )
-    else:
-        raise ValueError(f"Unknown allocation strategy: {strategy}")
+    # Dispatch to strategy-specific SQL generator
+    sql_generators = {
+        "pro_rata": generate_pro_rata_sql,
+        "equal": generate_equal_sql
+    }
 
-    # 6. Build workflow
-    workflow = {
-        "workflow_id": generate_workflow_id(),
+    if strategy not in sql_generators:
+        raise StrategyError(f"Unknown strategy: {strategy}")
+
+    allocation_sql = sql_generators[strategy](
+        kpi_column=normalize_kpi_name(kpi_name),
+        granularity=client_config["granularity"],
+        where_clause=where_clause,
+        database=client_config["database"],
+        table=client_config["data_table"],
+        new_value=payload["new_value"]
+    )
+
+    # Construct workflow DAG
+    return {
+        "workflow_id": generate_id(),
         "client_id": client_config["client_id"],
-        "steps": [
-            {
-                "step_id": "step_1_allocate",
-                "description": f"Allocate {kpi_name} using {strategy} strategy",
-                "sql": allocation_sql,
-                "dependencies": [],
-                "cleanup": False
-            }
-        ],
+        "steps": [{
+            "step_id": "allocate",
+            "sql": allocation_sql,
+            "dependencies": []
+        }],
         "metadata": {
-            "edit_type": "aggregated",
-            "allocation_strategy": strategy,
+            "strategy": strategy,
             "kpi": kpi_name
         }
     }
-
-    return workflow
 ```
 
-### Real Example Flow
+### Execution Trace
 
-**Scenario 1: Edit Established Product Sales**
-
-**User Payload:**
+**Input:**
 ```json
-{
-  "kpi": "Sls U",
-  "new_value": 50000,
-  "dept": "Electronics",
-  "time_level": "month",
-  "time_value": 1,
-  "year": 2024
-}
+{"kpi": "Sls U", "new_value": 50000, "dept": "Electronics", "time_level": "month", "time_value": 1, "year": 2024}
 ```
 
-**Workflow Generator Logic:**
-```python
-# 1. Read payload
-kpi_name = "Sls U"
-
-# 2. Load config for this KPI
-kpi_config = config.find_kpi("Sls U")
-# Returns: {"name": "Sls U", "allocation_strategy": {"default": {"strategy": "pro_rata"}}, ...}
-
-# 3. Extract strategy
-strategy = kpi_config["allocation_strategy"]["default"]["strategy"]
-# Result: "pro_rata"
-
-# 4. Generate SQL using pro_rata function
-sql = generate_pro_rata_sql(...)
+**Resolution:**
+```
+lookup_kpi("Sls U") → config.allocation_strategy.default.strategy → "pro_rata"
 ```
 
 **Generated SQL:**
 ```sql
 ALTER TABLE spanx_kpi_data.kpi_data AS target
-UPDATE sls_u = (
-    SELECT 50000 * (sls_u / SUM(sls_u) OVER ())
-    FROM spanx_kpi_data.kpi_data AS source
-    WHERE source.product_id = target.product_id
-      AND source.week = target.week
-      AND source.year = target.year
-)
-WHERE dept = 'Electronics' AND ...
+UPDATE sls_u = (SELECT 50000 * (sls_u / SUM(sls_u) OVER ()) FROM ... WHERE ...)
+WHERE dept = 'Electronics' AND toMonth(...) = 1 AND year = 2024
 ```
 
-**Scenario 2: Edit New Product Forecast**
-
-**User Payload:**
+**Input:**
 ```json
-{
-  "kpi": "New Product Forecast",
-  "new_value": 10000,
-  "dept": "Apparel",
-  "time_level": "quarter",
-  "time_value": 1,
-  "year": 2024
-}
+{"kpi": "New Product Forecast", "new_value": 10000, "dept": "Apparel", "time_level": "quarter", "time_value": 1, "year": 2024}
 ```
 
-**Workflow Generator Logic:**
-```python
-# 1. Read payload
-kpi_name = "New Product Forecast"
-
-# 2. Load config for this KPI
-kpi_config = config.find_kpi("New Product Forecast")
-# Returns: {"name": "New Product Forecast", "allocation_strategy": {"default": {"strategy": "equal"}}, ...}
-
-# 3. Extract strategy
-strategy = kpi_config["allocation_strategy"]["default"]["strategy"]
-# Result: "equal"
-
-# 4. Generate SQL using equal function
-sql = generate_equal_sql(...)
+**Resolution:**
+```
+lookup_kpi("New Product Forecast") → config.allocation_strategy.default.strategy → "equal"
 ```
 
 **Generated SQL:**
 ```sql
 ALTER TABLE spanx_kpi_data.kpi_data AS target
-UPDATE new_product_forecast = (
-    SELECT 10000 / COUNT(*) OVER ()
-    FROM spanx_kpi_data.kpi_data AS source
-    WHERE source.product_id = target.product_id
-      AND source.week = target.week
-      AND source.year = target.year
-)
-WHERE dept = 'Apparel' AND ...
+UPDATE new_product_forecast = (SELECT 10000 / COUNT(*) OVER () FROM ... WHERE ...)
+WHERE dept = 'Apparel' AND toQuarter(...) = 1 AND year = 2024
 ```
 
-### Multi-KPI Example
+### Strategy Mapping Table
 
-**Config with Different Strategies:**
-
-```json
-{
-  "client_id": "spanx",
-  "granularity": ["product_id", "week", "year"],
-  "kpis": [
-    {
-      "name": "Sls U",
-      "allocation_strategy": {
-        "default": {"strategy": "pro_rata"}
-      }
-    },
-    {
-      "name": "Target Inventory",
-      "allocation_strategy": {
-        "default": {"strategy": "equal"}
-      }
-    },
-    {
-      "name": "Promo Units",
-      "allocation_strategy": {
-        "default": {"strategy": "pro_rata"}
-      }
-    }
-  ]
-}
+```
+KPI                  | allocation_strategy.default.strategy
+---------------------|-------------------------------------
+Sls U                | pro_rata
+Target Inventory     | equal
+Promo Units          | pro_rata
 ```
 
-**Results:**
+### Multi-Tenant Configuration
 
-| KPI | Edit Type | Strategy Used | Why |
-|-----|-----------|---------------|-----|
-| Sls U | Aggregated | **Pro-Rata** | Preserve current product mix |
-| Target Inventory | Aggregated | **Equal** | Distribute evenly (reset) |
-| Promo Units | Aggregated | **Pro-Rata** | Scale up promotions proportionally |
+Same KPI identifier resolves to different strategies per client:
 
-### Client-Specific Configurations
+```
+client_id: spanx
+  kpi: "Sls U" → strategy: "pro_rata"
 
-Different clients can have different strategies for the same KPI name.
-
-**Client: Spanx**
-```json
-{
-  "client_id": "spanx",
-  "kpis": [
-    {
-      "name": "Sls U",
-      "allocation_strategy": {
-        "default": {"strategy": "pro_rata"}
-      }
-    }
-  ]
-}
+client_id: newbrand
+  kpi: "Sls U" → strategy: "equal"
 ```
 
-**Client: NewBrand**
-```json
-{
-  "client_id": "newbrand",
-  "kpis": [
-    {
-      "name": "Sls U",
-      "allocation_strategy": {
-        "default": {"strategy": "equal"}
-      }
-    }
-  ]
-}
-```
-
-**Same KPI name, different strategy!** NewBrand uses equal distribution because they're launching new products.
-
-### Config Loading
-
-**Environment-Based:**
+### Config Resolution
 
 ```python
-import os
-import json
-from functools import lru_cache
-
 @lru_cache(maxsize=1)
 def load_client_config() -> dict:
-    """
-    Load client config based on CLIENT_ID environment variable.
-    """
     client_id = os.getenv("CLIENT_ID")
     if not client_id:
-        raise ValueError("CLIENT_ID environment variable not set")
+        raise ConfigError("CLIENT_ID not set")
 
     config_path = f"configs/{client_id}/kpi_config.json"
-
-    with open(config_path) as f:
-        config = json.load(f)
-
-    return config
+    return json.load(open(config_path))
 ```
 
-**Usage:**
 ```bash
-# Start service for Spanx
 export CLIENT_ID=spanx
-uvicorn app.main:app --reload
+uvicorn app.main:app
+# → loads configs/spanx/kpi_config.json
 ```
 
-When a request comes in:
-```python
-# In workflow generator endpoint
-@app.post("/generate-workflow")
-def generate_workflow(payload: dict):
-    # Load config for current client
-    config = load_client_config()
-    # Uses configs/spanx/kpi_config.json
-
-    # Generate workflow using config
-    workflow = generate_aggregated_workflow(payload, config)
-
-    return workflow
-```
-
-### Default Strategy Fallback
-
-**What if no strategy specified?**
+### Fallback Chain
 
 ```python
-# Safe extraction with fallback
-allocation_config = kpi_config.get("allocation_strategy", {})
-default_config = allocation_config.get("default", {})
-strategy = default_config.get("strategy", "pro_rata")  # Default to pro_rata
-
-# This prevents crashes if config is missing allocation_strategy
+strategy = (kpi_config
+            .get("allocation_strategy", {})
+            .get("default", {})
+            .get("strategy", "pro_rata"))  # fallback
 ```
 
-**Config without allocation_strategy:**
-```json
-{
-  "name": "Some KPI",
-  "is_editable": true
-  // No allocation_strategy field
-}
+Missing config → defaults to `pro_rata`
+
+### Runtime Strategy Modification
+
 ```
+Config change:
+  allocation_strategy.default.strategy: "pro_rata" → "equal"
 
-**Behavior:** Falls back to `"pro_rata"` (safe default)
+Next request:
+  resolve_strategy() → "equal"
 
-### Changing Strategy Without Code Changes
-
-**Before (Old Config):**
-```json
-{
-  "name": "Sls U",
-  "allocation_strategy": {
-    "default": {"strategy": "pro_rata"}
-  }
-}
+No code deployment required.
 ```
-
-**Business Decision:** "We want to reset product distribution fairly"
-
-**After (New Config):**
-```json
-{
-  "name": "Sls U",
-  "allocation_strategy": {
-    "default": {"strategy": "equal"}
-  }
-}
-```
-
-**Result:**
-- No code changes needed
-- No redeployment needed (config is loaded at runtime)
-- Just update JSON file
-- Next edit uses equal distribution
-
-### Why This Architecture Wins
-
-**1. Flexibility**
-```
-Different KPIs → Different strategies
-Same KPI, different clients → Different strategies
-Change strategy → Just update config
-```
-
-**2. Testability**
-```python
-# Test with different configs
-test_config_pro_rata = {"allocation_strategy": {"default": {"strategy": "pro_rata"}}}
-test_config_equal = {"allocation_strategy": {"default": {"strategy": "equal"}}}
-
-assert generate_workflow(payload, test_config_pro_rata) != generate_workflow(payload, test_config_equal)
-```
-
-**3. Business Control**
-- Business analysts can change strategies
-- No developer needed for strategy changes
-- A/B test different strategies
-- Client-specific customization
-
-**4. Maintainability**
-- Single source of truth (config file)
-- No scattered hardcoded logic
-- Easy to audit ("Which KPIs use pro-rata?")
-- Clear configuration schema
 
 ---
 
-## 📝 Summary
+## Summary
 
-### Pro-Rata
-- **Formula:** `new = target × (current / sum)`
-- **Behavior:** Preserves proportions
-- **Use Case:** Scaling existing patterns
-- **SQL:** `target * (value / SUM(value) OVER ())`
+### Allocation Strategies
 
-### Equal
-- **Formula:** `new = target / count`
-- **Behavior:** Ignores current, splits evenly
-- **Use Case:** New products, resets
-- **SQL:** `target / COUNT(*) OVER ()`
-
-### Config-Driven
-- **Strategy per KPI:** Each KPI has its own allocation strategy in config
-- **Client-specific:** Same KPI can use different strategies for different clients
-- **No code changes:** Change strategy by updating JSON config
-- **Runtime loading:** Config read from `configs/{client_id}/kpi_config.json`
-
-### Key Takeaway
-
-Both strategies use **window functions** to:
-1. Keep individual rows intact
-2. Calculate aggregates (SUM, COUNT)
-3. Perform allocation in single pass
-4. Achieve efficient execution
-
-The choice between them is **business-driven** and **config-driven**, not hardcoded.
-
-**Architecture flow:**
 ```
-Payload → Load Config → Read Strategy → Generate SQL → Execute
+pro_rata:
+  formula: new = target × (current / sum)
+  SQL: target * (value / SUM(value) OVER ())
+  behavior: preserves proportions
+
+equal:
+  formula: new = target / count
+  SQL: target / COUNT(*) OVER ()
+  behavior: uniform distribution
+```
+
+### Architecture
+
+```
+Strategy resolution:
+  per-KPI configuration
+  client-specific overrides
+  runtime config loading
+
+Execution path:
+  payload → load_config(client_id) → resolve_strategy(kpi) → generate_sql(strategy) → execute
+
+Window function approach:
+  single pass over filtered data
+  no GROUP BY required
+  maintains row-level granularity
 ```
