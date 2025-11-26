@@ -22,11 +22,19 @@ This directory contains an example workflow for `written_sales_dollars` KPI edit
 }
 ```
 
+**How the Workflow Generator Works:**
+1. **Receives payload** with `time_level: "month"`, `time_value: 1`, `year: 2024`
+2. **Calculates date range** → `start_date: '2024-01-01'`, `end_date: '2024-01-31'`
+3. **Generates SQL** with those calculated dates (fully hydrated)
+4. **Returns workflow** with 8 steps, all SQL ready to execute
+
 **Generated Workflow:**
 - **8 steps** with fully hydrated SQL (no template variables)
-- **Date range:** January 1-31, 2024
+- **Date range:** Calculated from `time_level: "month"`, `time_value: 1` → January 1-31, 2024
 - **Allocation:** Pro-rata (ABSOLUTE edit)
 - **New value:** 50000
+
+See `WORKFLOW_GENERATOR_DATE_LOGIC.md` for detailed date calculation logic.
 
 ## Key Features
 
