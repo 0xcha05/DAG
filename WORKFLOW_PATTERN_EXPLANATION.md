@@ -102,8 +102,11 @@ Each step follows this template:
 
 ## SQL Pattern for Each Step
 
-Each recalculation step uses `multiIf()` to conditionally update only within the edited date range:
+Each recalculation step uses `multiIf()` to conditionally update only within the edited date range.
 
+**All SQL is fully hydrated with actual values from the payload.**
+
+**Example template pattern:**
 ```sql
 CREATE TEMPORARY TABLE recalc_xxx_temp ENGINE = Memory AS
 SELECT
@@ -114,8 +117,8 @@ SELECT
 
   multiIf(
     -- Condition: Is this row in the edited date range?
-    toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate({start_date})
-    AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate({end_date}),
+    toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate('2024-01-01')
+    AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate('2024-01-31'),
 
     -- TRUE: Recalculate the KPI
     if(denominator > 0, numerator / denominator, original_value),
@@ -132,7 +135,7 @@ FROM previous_temp_table
 
 **Formula:** `written_aur = written_sales_dollars / written_sales_units`
 
-**SQL:**
+**Fully Hydrated SQL (for January 2024 edit):**
 ```sql
 CREATE TEMPORARY TABLE recalc_aur_temp ENGINE = Memory AS
 SELECT
@@ -148,9 +151,9 @@ SELECT
   written_sales_units,     -- Unchanged
 
   multiIf(
-    -- Only recalculate for edited date range
-    toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate({start_date})
-    AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate({end_date}),
+    -- Only recalculate for January 2024 date range
+    toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate('2024-01-01')
+    AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate('2024-01-31'),
 
     -- Recalculate: AUR = Sales $ / Sales Units
     if(written_sales_units > 0, written_sales_dollars / written_sales_units, written_aur),
@@ -165,33 +168,40 @@ FROM allocated_written_sls_temp
 
 ## Allocation Step
 
-The first step handles allocation based on edit type:
+The first step handles allocation. The workflow generator produces **fully hydrated SQL** with actual values, not templates.
+
+**Example for ABSOLUTE edit of 50000 for January 2024:**
 
 ```sql
 multiIf(
   -- Condition: Is this row in the edited date range?
-  toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate({start_date})
-  AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate({end_date}),
+  toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate('2024-01-01')
+  AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate('2024-01-31'),
 
-  -- TRUE: Apply allocation
-  CASE
-    WHEN {edit_type} = 'PERCENTAGE' THEN
-      -- Percentage edit: multiply by (1 + percentage/100)
-      written_sales_dollars * (1 + {new_value} / 100)
-
-    WHEN {edit_type} = 'ABSOLUTE' THEN
-      -- Absolute edit: allocate using pro-rata
-      {new_value} * (written_sales_dollars / SUM(written_sales_dollars) OVER ())
-
-    ELSE
-      -- Fallback: keep original
-      written_sales_dollars
-  END,
+  -- TRUE: Apply pro-rata allocation
+  50000 * (written_sales_dollars / SUM(written_sales_dollars) OVER ()),
 
   -- FALSE: Keep original value
   written_sales_dollars
 ) AS written_sales_dollars
 ```
+
+**Example for PERCENTAGE edit of +20% for Q1 2024:**
+
+```sql
+multiIf(
+  toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate('2024-01-01')
+  AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate('2024-03-31'),
+
+  -- TRUE: Apply percentage increase
+  written_sales_dollars * 1.2,
+
+  -- FALSE: Keep original value
+  written_sales_dollars
+) AS written_sales_dollars
+```
+
+**Key Point:** The workflow generator resolves edit type and generates the appropriate SQL. No runtime branching or template variables.
 
 ## Workflow Output Format
 

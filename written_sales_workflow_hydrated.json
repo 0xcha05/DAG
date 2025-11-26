@@ -1,0 +1,91 @@
+{
+  "steps": [
+    {
+      "step_id": "allocate_written_sales_dollars",
+      "source_table": "kpi_edit_base_temp_table",
+      "target_table": "allocated_written_sls_temp",
+      "process_sql": "CREATE TEMPORARY TABLE allocated_written_sls_temp ENGINE = Memory AS SELECT product_id, week, year, l0_name, l1_name, l2_name, channel, multiIf(toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate('2024-01-01') AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate('2024-01-31'), 50000 * (written_sales_dollars / SUM(written_sales_dollars) OVER ()), written_sales_dollars) AS written_sales_dollars, written_sales_units, written_aur, written_dr_perc, written_gm_dollar, written_gm_perc, return_units, return_dollars, net_sales_dollars, cogs, discount_dollars FROM kpi_edit_base_temp_table",
+      "cleanup_source": false,
+      "dependencies": []
+    },
+
+    {
+      "step_id": "recalc_written_aur",
+      "source_table": "allocated_written_sls_temp",
+      "target_table": "recalc_aur_temp",
+      "process_sql": "CREATE TEMPORARY TABLE recalc_aur_temp ENGINE = Memory AS SELECT product_id, week, year, l0_name, l1_name, l2_name, channel, written_sales_dollars, written_sales_units, multiIf(toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate('2024-01-01') AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate('2024-01-31'), if(written_sales_units > 0, written_sales_dollars / written_sales_units, written_aur), written_aur) AS written_aur, written_dr_perc, written_gm_dollar, written_gm_perc, return_units, return_dollars, net_sales_dollars, cogs, discount_dollars FROM allocated_written_sls_temp",
+      "cleanup_source": true,
+      "dependencies": ["allocate_written_sales_dollars"]
+    },
+
+    {
+      "step_id": "recalc_written_dr_perc",
+      "source_table": "recalc_aur_temp",
+      "target_table": "recalc_dr_perc_temp",
+      "process_sql": "CREATE TEMPORARY TABLE recalc_dr_perc_temp ENGINE = Memory AS SELECT product_id, week, year, l0_name, l1_name, l2_name, channel, written_sales_dollars, written_sales_units, written_aur, multiIf(toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate('2024-01-01') AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate('2024-01-31'), if((discount_dollars + written_sales_dollars) > 0, discount_dollars / (discount_dollars + written_sales_dollars) * 100, written_dr_perc), written_dr_perc) AS written_dr_perc, written_gm_dollar, written_gm_perc, return_units, return_dollars, net_sales_dollars, cogs, discount_dollars FROM recalc_aur_temp",
+      "cleanup_source": true,
+      "dependencies": ["recalc_written_aur"]
+    },
+
+    {
+      "step_id": "recalc_written_gm_dollar",
+      "source_table": "recalc_dr_perc_temp",
+      "target_table": "recalc_gm_dollar_temp",
+      "process_sql": "CREATE TEMPORARY TABLE recalc_gm_dollar_temp ENGINE = Memory AS SELECT product_id, week, year, l0_name, l1_name, l2_name, channel, written_sales_dollars, written_sales_units, written_aur, written_dr_perc, multiIf(toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate('2024-01-01') AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate('2024-01-31'), written_sales_dollars - cogs, written_gm_dollar) AS written_gm_dollar, written_gm_perc, return_units, return_dollars, net_sales_dollars, cogs, discount_dollars FROM recalc_dr_perc_temp",
+      "cleanup_source": true,
+      "dependencies": ["recalc_written_dr_perc"]
+    },
+
+    {
+      "step_id": "recalc_written_gm_perc",
+      "source_table": "recalc_gm_dollar_temp",
+      "target_table": "recalc_gm_perc_temp",
+      "process_sql": "CREATE TEMPORARY TABLE recalc_gm_perc_temp ENGINE = Memory AS SELECT product_id, week, year, l0_name, l1_name, l2_name, channel, written_sales_dollars, written_sales_units, written_aur, written_dr_perc, written_gm_dollar, multiIf(toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate('2024-01-01') AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate('2024-01-31'), if(written_sales_dollars > 0, written_gm_dollar / written_sales_dollars * 100, written_gm_perc), written_gm_perc) AS written_gm_perc, return_units, return_dollars, net_sales_dollars, cogs, discount_dollars FROM recalc_gm_dollar_temp",
+      "cleanup_source": true,
+      "dependencies": ["recalc_written_gm_dollar"]
+    },
+
+    {
+      "step_id": "recalc_return_dollars",
+      "source_table": "recalc_gm_perc_temp",
+      "target_table": "recalc_return_dollars_temp",
+      "process_sql": "CREATE TEMPORARY TABLE recalc_return_dollars_temp ENGINE = Memory AS SELECT product_id, week, year, l0_name, l1_name, l2_name, channel, written_sales_dollars, written_sales_units, written_aur, written_dr_perc, written_gm_dollar, written_gm_perc, return_units, multiIf(toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate('2024-01-01') AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate('2024-01-31'), return_units * written_aur, return_dollars) AS return_dollars, net_sales_dollars, cogs, discount_dollars FROM recalc_gm_perc_temp",
+      "cleanup_source": true,
+      "dependencies": ["recalc_written_gm_perc"]
+    },
+
+    {
+      "step_id": "recalc_net_sales_dollars",
+      "source_table": "recalc_return_dollars_temp",
+      "target_table": "recalc_net_sales_temp",
+      "process_sql": "CREATE TEMPORARY TABLE recalc_net_sales_temp ENGINE = Memory AS SELECT product_id, week, year, l0_name, l1_name, l2_name, channel, written_sales_dollars, written_sales_units, written_aur, written_dr_perc, written_gm_dollar, written_gm_perc, return_units, return_dollars, multiIf(toDate(year, 1, 1) + toIntervalWeek(week - 1) >= toDate('2024-01-01') AND toDate(year, 1, 1) + toIntervalWeek(week - 1) <= toDate('2024-01-31'), written_sales_dollars - return_dollars, net_sales_dollars) AS net_sales_dollars, cogs, discount_dollars FROM recalc_return_dollars_temp",
+      "cleanup_source": true,
+      "dependencies": ["recalc_return_dollars"]
+    },
+
+    {
+      "step_id": "final_projection",
+      "source_table": "recalc_net_sales_temp",
+      "target_table": "kpi_edited_temp_table",
+      "process_sql": "CREATE TEMPORARY TABLE kpi_edited_temp_table ENGINE = Memory AS SELECT product_id, week, year, l0_name, l1_name, l2_name, channel, written_sales_dollars AS sls_dlr_written, written_sales_units AS sls_u_written, written_aur AS aur_written, written_dr_perc AS dr_perc_written, written_gm_dollar AS gm_dlr_written, written_gm_perc AS gm_perc_written, return_units AS return_u, return_dollars AS return_dlr, net_sales_dollars AS net_sls_dlr, cogs, discount_dollars AS disc_dlr FROM recalc_net_sales_temp",
+      "cleanup_source": true,
+      "dependencies": ["recalc_net_sales_dollars"]
+    }
+  ],
+
+  "final_output_table": "kpi_edited_temp_table",
+
+  "metadata": {
+    "edit_type": "aggregated",
+    "kpi": "written_sales_dollars",
+    "allocation_strategy": "pro_rata",
+    "new_value": 50000,
+    "date_range": {
+      "start": "2024-01-01",
+      "end": "2024-01-31"
+    },
+    "time_period": "month",
+    "time_value": 1,
+    "year": 2024
+  }
+}
